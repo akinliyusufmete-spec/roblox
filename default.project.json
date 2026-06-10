@@ -1,0 +1,27 @@
+{
+  "name": "schoolhouse-survival",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "BaldiShared": {
+        "$path": "src/ReplicatedStorage/BaldiShared"
+      }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "BaldiGame": {
+        "$path": "src/ServerScriptService/BaldiGame"
+      }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "BaldiClient": {
+          "$path": "src/StarterPlayer/StarterPlayerScripts/BaldiClient"
+        }
+      }
+    }
+  }
+}
