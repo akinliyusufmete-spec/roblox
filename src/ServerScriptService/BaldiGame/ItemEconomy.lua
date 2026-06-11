@@ -444,36 +444,14 @@ function ItemEconomy.init(ctx)
 
 	-- ===================== vending machines =====================
 
-	for machineId, machine in ipairs(ctx.map.vendingMachines) do
-		machine.prompt.Triggered:Connect(function(player)
-			local def = config.ITEMS[machine.itemId]
-			if not def then
-				return
-			end
-			ctx.remotes.OpenVending:FireClient(player, {
-				machineId = machineId,
-				itemId = machine.itemId,
-				cost = def.cost,
-				nickels = getState(player).nickels,
-				position = machine.part.Position,
-			})
-		end)
-	end
-
-	ctx.remotes.BuyItem.OnServerEvent:Connect(function(player, machineId)
-		local machine = ctx.map.vendingMachines[machineId]
-		if not machine or not machine.part.Parent then
-			return
-		end
-		local character = player.Character
-		local hrp = character and character:FindFirstChild("HumanoidRootPart")
-		if not hrp or (hrp.Position - machine.part.Position).Magnitude > 12 then
-			return
-		end
+	local function tryBuy(player, machine)
 		local def = config.ITEMS[machine.itemId]
+		if not def then return end
 		local state = getState(player)
 		if state.nickels < def.cost then
-			ctx.remotes.BuyResult:FireClient(player, false, "Not enough Nickels!")
+			ctx.remotes.BuyResult:FireClient(player, false,
+				"Need " .. def.cost .. " Nickel" .. (def.cost == 1 and "" or "s")
+				.. " (have " .. state.nickels .. ")")
 			return
 		end
 		if not freeSlot(state) then
@@ -483,8 +461,18 @@ function ItemEconomy.init(ctx)
 		state.nickels = state.nickels - def.cost
 		giveItem(player, machine.itemId)
 		syncNickels(player)
-		ctx.remotes.BuyResult:FireClient(player, true, def.displayName .. " dispensed!")
-	end)
+		ctx.remotes.BuyResult:FireClient(player, true, def.displayName .. " bought!")
+	end
+
+	for _, machine in ipairs(ctx.map.vendingMachines) do
+		machine.prompt.Triggered:Connect(function(player)
+			if not ctx.manager or not ctx.manager.isRoundActive()
+				or not ctx.manager.isParticipant(player) then
+				return
+			end
+			tryBuy(player, machine)
+		end)
+	end
 
 	ctx.economy = self
 	return self

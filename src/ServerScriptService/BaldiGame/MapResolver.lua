@@ -152,7 +152,7 @@ function MapResolver.resolve(ctx)
 					or part:FindFirstChildOfClass("ProximityPrompt")
 				if not prompt then
 					prompt = Instance.new("ProximityPrompt")
-					prompt.ActionText = "Browse"
+					prompt.ActionText = "Buy"
 					prompt.ObjectText = config.ITEMS[itemId].displayName .. " Machine"
 					prompt.HoldDuration = 0
 					prompt.MaxActivationDistance = 5

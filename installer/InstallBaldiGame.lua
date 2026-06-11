@@ -1942,36 +1942,14 @@ function ItemEconomy.init(ctx)
 
 	-- ===================== vending machines =====================
 
-	for machineId, machine in ipairs(ctx.map.vendingMachines) do
-		machine.prompt.Triggered:Connect(function(player)
-			local def = config.ITEMS[machine.itemId]
-			if not def then
-				return
-			end
-			ctx.remotes.OpenVending:FireClient(player, {
-				machineId = machineId,
-				itemId = machine.itemId,
-				cost = def.cost,
-				nickels = getState(player).nickels,
-				position = machine.part.Position,
-			})
-		end)
-	end
-
-	ctx.remotes.BuyItem.OnServerEvent:Connect(function(player, machineId)
-		local machine = ctx.map.vendingMachines[machineId]
-		if not machine or not machine.part.Parent then
-			return
-		end
-		local character = player.Character
-		local hrp = character and character:FindFirstChild("HumanoidRootPart")
-		if not hrp or (hrp.Position - machine.part.Position).Magnitude > 12 then
-			return
-		end
+	local function tryBuy(player, machine)
 		local def = config.ITEMS[machine.itemId]
+		if not def then return end
 		local state = getState(player)
 		if state.nickels < def.cost then
-			ctx.remotes.BuyResult:FireClient(player, false, "Not enough Nickels!")
+			ctx.remotes.BuyResult:FireClient(player, false,
+				"Need " .. def.cost .. " Nickel" .. (def.cost == 1 and "" or "s")
+				.. " (have " .. state.nickels .. ")")
 			return
 		end
 		if not freeSlot(state) then
@@ -1981,8 +1959,18 @@ function ItemEconomy.init(ctx)
 		state.nickels = state.nickels - def.cost
 		giveItem(player, machine.itemId)
 		syncNickels(player)
-		ctx.remotes.BuyResult:FireClient(player, true, def.displayName .. " dispensed!")
-	end)
+		ctx.remotes.BuyResult:FireClient(player, true, def.displayName .. " bought!")
+	end
+
+	for _, machine in ipairs(ctx.map.vendingMachines) do
+		machine.prompt.Triggered:Connect(function(player)
+			if not ctx.manager or not ctx.manager.isRoundActive()
+				or not ctx.manager.isParticipant(player) then
+				return
+			end
+			tryBuy(player, machine)
+		end)
+	end
 
 	ctx.economy = self
 	return self
@@ -2353,7 +2341,7 @@ function MapResolver.resolve(ctx)
 					or part:FindFirstChildOfClass("ProximityPrompt")
 				if not prompt then
 					prompt = Instance.new("ProximityPrompt")
-					prompt.ActionText = "Browse"
+					prompt.ActionText = "Buy"
 					prompt.ObjectText = config.ITEMS[itemId].displayName .. " Machine"
 					prompt.HoldDuration = 0
 					prompt.MaxActivationDistance = 5
@@ -6555,22 +6543,16 @@ return UiKit
 --[[
 	VendingMachineUI (ModuleScript, StarterPlayerScripts.BaldiClient.VendingMachineUI)
 
-	Popup shown when the vending machine's ProximityPrompt is triggered:
-	item name, picture, cost, your current Nickel count, and a Buy button.
-	Closes on buy, on the X, or automatically when you walk away.
-
-	Your art: AssetConfig.IMAGES.VENDING_PANEL backs the popup;
-	IMAGES.ITEMS.<id> replaces the colored item block.
+	Activating a vending machine's ProximityPrompt immediately attempts the
+	purchase on the server — no popup needed. This module shows a brief
+	on-screen toast confirming the purchase or explaining why it failed.
 ]]
-
-local RunService = game:GetService("RunService")
 
 local VendingMachineUI = {}
 
 function VendingMachineUI.init(ctx)
 	local UiKit = require(script.Parent:WaitForChild("UiKit"))
 	local theme = UiKit.theme
-	local images = ctx.assets.IMAGES
 	local sounds = ctx.controllers.SoundController
 	local self = {}
 
@@ -6579,214 +6561,37 @@ function VendingMachineUI.init(ctx)
 		Name = "BaldiVending",
 		ResetOnSpawn = false,
 		DisplayOrder = 8,
-		Enabled = false,
 		Parent = playerGui,
 	})
 
-	local panel = UiKit.panel({
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.55),
-		Size = UDim2.fromOffset(340, 250),
-		BackgroundColor3 = theme.panel,
-		BackgroundTransparency = 0.05,
-		Parent = gui,
-	}, images.VENDING_PANEL)
-	if panel:IsA("Frame") then
-		UiKit.corner(14).Parent = panel
-		UiKit.stroke(theme.accent, 2).Parent = panel
-	end
-
-	local titleLabel = UiKit.label({
-		Position = UDim2.fromOffset(16, 12),
-		Size = UDim2.new(1, -60, 0, 30),
-		Text = "BSODA",
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = panel,
-	})
-
-	local closeButton = UiKit.button({
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -10, 0, 10),
-		Size = UDim2.fromOffset(32, 32),
-		Text = "X",
-		BackgroundColor3 = theme.red,
-		TextColor3 = Color3.new(1, 1, 1),
-		Parent = panel,
-	})
-
-	-- item picture: your image, or a colored block with the short label
-	local iconFrame = UiKit.new("Frame", {
-		Position = UDim2.fromOffset(16, 52),
-		Size = UDim2.fromOffset(76, 76),
-		BackgroundColor3 = theme.blue,
-		Parent = panel,
-		UiKit.corner(10),
-	})
-	local iconImage = UiKit.new("ImageLabel", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundTransparency = 1,
-		ScaleType = Enum.ScaleType.Fit,
-		Visible = false,
-		Parent = iconFrame,
-	})
-	local iconText = UiKit.label({
-		Size = UDim2.fromScale(1, 1),
-		Text = "BSODA",
-		Parent = iconFrame,
-	})
-
-	local descLabel = UiKit.label({
-		Position = UDim2.fromOffset(104, 52),
-		Size = UDim2.new(1, -120, 0, 76),
-		Text = "",
-		TextWrapped = true,
-		TextScaled = false,
-		TextSize = 15,
-		TextStrokeTransparency = 1,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top,
-		TextColor3 = theme.textDim,
-		Parent = panel,
-	})
-
-	local costLabel = UiKit.label({
-		Position = UDim2.fromOffset(16, 138),
-		Size = UDim2.new(1, -32, 0, 22),
-		Text = "Cost: 1 Nickel",
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = theme.accent,
-		Parent = panel,
-	})
-	local haveLabel = UiKit.label({
-		Position = UDim2.fromOffset(16, 162),
-		Size = UDim2.new(1, -32, 0, 20),
-		Text = "You have: 0 Nickels",
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextStrokeTransparency = 1,
-		TextColor3 = theme.textDim,
-		Parent = panel,
-	})
-
-	local buyButton = UiKit.button({
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -14),
-		Size = UDim2.new(1, -32, 0, 42),
-		Text = "BUY",
-		Parent = panel,
-	})
-
-	local resultLabel = UiKit.label({
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -60),
-		Size = UDim2.new(1, -32, 0, 18),
+	local toast = UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.fromScale(0.5, 0.14),
+		Size = UDim2.new(0.7, 0, 0, 38),
 		Text = "",
 		TextColor3 = theme.green,
-		Parent = panel,
+		TextTransparency = 1,
+		Parent = gui,
 	})
 
-	-- ===================== behaviour =====================
-
-	local current = nil -- { machineId, itemId, cost, position }
-	local watcher = nil
-
-	local function close()
-		gui.Enabled = false
-		current = nil
-		if watcher then
-			watcher:Disconnect()
-			watcher = nil
+	local toastThread = nil
+	local function showToast(success, message)
+		if toastThread then
+			task.cancel(toastThread)
+			toastThread = nil
 		end
-	end
-
-	local function refreshAffordability(nickels)
-		haveLabel.Text = "You have: " .. nickels .. " Nickel" .. (nickels == 1 and "" or "s")
-		local canAfford = current ~= nil and nickels >= current.cost
-		buyButton.AutoButtonColor = canAfford
-		if buyButton:IsA("TextButton") then
-			buyButton.BackgroundColor3 = canAfford and theme.accent or Color3.fromRGB(95, 95, 90)
-		end
-	end
-
-	ctx.remotes.OpenVending.OnClientEvent:Connect(function(data)
-		local def = ctx.config.ITEMS[data.itemId]
-		if not def then
-			return
-		end
-		current = data
-		titleLabel.Text = def.displayName
-		local picture = images.ITEMS[data.itemId]
-		if UiKit.hasImage(picture) then
-			iconImage.Image = picture
-			iconImage.Visible = true
-			iconText.Visible = false
-			iconFrame.BackgroundTransparency = 1
-		else
-			iconImage.Visible = false
-			iconText.Visible = true
-			iconFrame.BackgroundTransparency = 0
-			iconFrame.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
-			iconText.Text = def.shortLabel
-		end
-		descLabel.Text = def.description
-		costLabel.Text = "Cost: " .. def.cost .. " Nickel" .. (def.cost == 1 and "" or "s")
-		resultLabel.Text = ""
-		refreshAffordability(data.nickels)
-		gui.Enabled = true
-		sounds.play("click")
-
-		-- close automatically when the player walks away
-		if watcher then
-			watcher:Disconnect()
-		end
-		watcher = RunService.Heartbeat:Connect(function()
-			local character = ctx.player.Character
-			local hrp = character and character:FindFirstChild("HumanoidRootPart")
-			if not hrp or not current then
-				close()
-				return
-			end
-			if (hrp.Position - current.position).Magnitude > ctx.config.VENDING_CLOSE_DISTANCE then
-				close()
-			end
+		toast.Text = message
+		toast.TextColor3 = success and theme.green or theme.red
+		toast.TextTransparency = 0
+		sounds.play(success and "buy" or "error")
+		toastThread = task.delay(2, function()
+			UiKit.tween(toast, 0.4, { TextTransparency = 1 })
+			toastThread = nil
 		end)
-	end)
+	end
 
-	ctx.remotes.NickelChanged.OnClientEvent:Connect(function(count)
-		if gui.Enabled then
-			refreshAffordability(count)
-		end
-	end)
+	ctx.remotes.BuyResult.OnClientEvent:Connect(showToast)
 
-	buyButton.Activated:Connect(function()
-		if current then
-			ctx.remotes.BuyItem:FireServer(current.machineId)
-		end
-	end)
-
-	closeButton.Activated:Connect(close)
-
-	ctx.remotes.BuyResult.OnClientEvent:Connect(function(success, message)
-		if not gui.Enabled then
-			return
-		end
-		if success then
-			sounds.play("buy")
-			resultLabel.TextColor3 = theme.green
-			resultLabel.Text = message
-			task.delay(0.5, close)
-		else
-			sounds.play("error")
-			resultLabel.TextColor3 = theme.red
-			resultLabel.Text = message
-			UiKit.shake(panel, 8)
-		end
-	end)
-
-	ctx.remotes.RoundEnded.OnClientEvent:Connect(close)
-	ctx.remotes.PlayerLost.OnClientEvent:Connect(close)
-	ctx.remotes.PlayerWon.OnClientEvent:Connect(close)
-
-	self.close = close
 	return self
 end
 
