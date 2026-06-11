@@ -8,13 +8,14 @@
 
 	  BaldiMap
 	  ├── Geometry        (walls, floors, furniture, ExitDoor, LobbySpawn,
-	  │                    VendingMachine_BSODA, VendingMachine_ZESTY)
+	  │                    VendingMachine_<ITEMID> machines)
 	  ├── Markers         (RoundSpawn, DetentionSpot, ChatReviveSpawn,
-	  │                    LpSpawn, FrostySpawn — invisible parts)
+	  │                    LpSpawn, FrostySpawn, SilverSpawn — invisible parts)
+	  ├── SweepRoutes     (Guidelines / Sai folders of ordered route parts)
 	  ├── Waypoints       (invisible parts the NPCs roam between)
 	  ├── NotebookSpawns  (invisible parts; 10 are picked per round)
 	  ├── NickelSpawns    (invisible parts; starter coins)
-	  └── ItemSpawns      (invisible parts named BSODA / ZESTY)
+	  └── ItemSpawns      (invisible parts named after item ids)
 
 	Layout (top-down, studs). Floor top sits at Y = 0.
 	  School rectangle: X -96..96, Z -72..72
@@ -226,6 +227,9 @@ function PlaceholderMap.generate(config)
 	local markers = Instance.new("Folder")
 	markers.Name = "Markers"
 	markers.Parent = root
+	local sweepRoutes = Instance.new("Folder")
+	sweepRoutes.Name = "SweepRoutes"
+	sweepRoutes.Parent = root
 	local waypoints = Instance.new("Folder")
 	waypoints.Name = "Waypoints"
 	waypoints.Parent = root
@@ -401,6 +405,8 @@ function PlaceholderMap.generate(config)
 	-- ---------- vending machines (south hall, against the central block) ----------
 	buildVendingMachine(geometry, -16, 38.2, config.ITEMS.BSODA)
 	buildVendingMachine(geometry, 16, 38.2, config.ITEMS.ZESTY)
+	buildVendingMachine(geometry, -32, 38.2, config.ITEMS.SCISSORS)
+	buildVendingMachine(geometry, 32, 38.2, config.ITEMS.ALARM)
 
 	-- ---------- markers (the contract MapResolver reads) ----------
 	invisibleNode("RoundSpawn", CFrame.lookAt(Vector3.new(0, 1, -58), Vector3.new(0, 1, -30)), markers)
@@ -408,6 +414,20 @@ function PlaceholderMap.generate(config)
 	invisibleNode("ChatReviveSpawn", CFrame.new(90, 1, 0), markers) -- library east end
 	invisibleNode("LpSpawn", CFrame.new(-75, 1, 0), markers) -- gym center
 	invisibleNode("FrostySpawn", CFrame.new(0, 1, 42), markers) -- south hall
+	invisibleNode("SilverSpawn", CFrame.new(30, 1, -60), markers) -- classroom B
+
+	-- ---------- sweep routes (Guidelines: north hall, Sai: south hall) ----------
+	local guidelinesRoute = Instance.new("Folder")
+	guidelinesRoute.Name = "Guidelines"
+	guidelinesRoute.Parent = sweepRoutes
+	invisibleNode("1", CFrame.new(-48, 1, -42), guidelinesRoute)
+	invisibleNode("2", CFrame.new(48, 1, -42), guidelinesRoute)
+
+	local saiRoute = Instance.new("Folder")
+	saiRoute.Name = "Sai"
+	saiRoute.Parent = sweepRoutes
+	invisibleNode("1", CFrame.new(-48, 1, 42), saiRoute)
+	invisibleNode("2", CFrame.new(48, 1, 42), saiRoute)
 
 	-- ---------- AI waypoints ----------
 	local waypointSpots = {
@@ -451,6 +471,8 @@ function PlaceholderMap.generate(config)
 	end
 	invisibleNode("BSODA", CFrame.new(-22, 1.5, -60), itemSpawns) -- classroom A
 	invisibleNode("ZESTY", CFrame.new(18, 1.5, 60), itemSpawns) -- classroom D
+	invisibleNode("SCISSORS", CFrame.new(-75, 1.5, -16), itemSpawns) -- gym
+	invisibleNode("ALARM", CFrame.new(66, 1.5, -16), itemSpawns) -- library
 
 	-- ---------- lobby (menu area, away from the school) ----------
 	local lobbyFloor = basePart({

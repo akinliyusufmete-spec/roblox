@@ -76,6 +76,7 @@ AssetConfig.IMAGES = {
 	LOSE_BACKGROUND = "", -- CAUGHT! screen
 	DETENTION_BACKGROUND = "", -- detention overlay (semi-transparent works best)
 	FROST_OVERLAY = "", -- Frosty chill overlay (transparent PNG, icy edges)
+	SILVER_OVERLAY = "", -- Silver grab minigame backdrop (semi-transparent PNG)
 
 	-- HUD pieces
 	NOTEBOOK_ICON = "", -- little notebook next to the counter (top left)
@@ -93,16 +94,20 @@ AssetConfig.IMAGES = {
 	ITEMS = {
 		BSODA = "",
 		ZESTY = "",
+		SCISSORS = "",
+		ALARM = "",
 	},
 }
 
 -- ========== sounds ==========
 -- Client feedback sounds (played by SoundController):
 --   click, collect, nickel, buy, error, exhausted, caught, detention,
---   frost, use, win
--- Server NPC sounds:
+--   frost, use, win, grab (Silver caught you), swept (a sweeper hit you)
+-- Server NPC/world sounds:
 --   chase   = ChatRevive's repeating chase noise (the "slap")
 --   whistle = LP's alert when he starts chasing
+--   sweep   = looping noise a sweeper makes mid-sweep
+--   alarm   = the placed Alarm Clock's ringing loop
 AssetConfig.SOUNDS = {
 	click = "",
 	collect = "",
@@ -115,8 +120,12 @@ AssetConfig.SOUNDS = {
 	frost = "",
 	use = "",
 	win = "",
+	grab = "",
+	swept = "",
 	chase = "",
 	whistle = "",
+	sweep = "",
+	alarm = "",
 }
 
 return AssetConfig
@@ -178,6 +187,22 @@ GameConfig.ITEMS = {
 		cost = 1,
 		color = { 250, 200, 40 },
 	},
+	SCISSORS = {
+		id = "SCISSORS",
+		displayName = "Safety Scissors",
+		shortLabel = "SNIP",
+		description = "Cut yourself free the instant Silver grabs you — and Silver stays snipped for a while. Only works while grabbed.",
+		cost = 1,
+		color = { 210, 210, 220 },
+	},
+	ALARM = {
+		id = "ALARM",
+		displayName = "Alarm Clock",
+		shortLabel = "ALARM",
+		description = "Drops at your feet and rings loudly. ChatRevive can't resist investigating the noise.",
+		cost = 1,
+		color = { 255, 150, 50 },
+	},
 }
 
 GameConfig.INVENTORY_SLOTS = 2
@@ -193,6 +218,10 @@ GameConfig.BSODA_PROJECTILE = {
 	PUSH_DURATION = 0.5,
 	STUN_SECONDS = 3,
 	HIT_RADIUS = 4,
+}
+
+GameConfig.ALARM_CLOCK = {
+	RING_SECONDS = 12, -- how long a placed alarm distracts ChatRevive
 }
 
 -- ========== NPCs ==========
@@ -248,7 +277,48 @@ GameConfig.NPC = {
 		DEBUFF_SECONDS = 4,
 		DEBUFF_MULTIPLIER = 0.4, -- WalkSpeed becomes base * 0.4
 		DEBUFF_COOLDOWN = 4, -- per victim
-		SLOWS_NPCS = true, -- Frosty also chills ChatRevive / LP that wander too close
+		SLOWS_NPCS = true, -- Frosty also chills any character that wanders too close
+	},
+	SILVER = {
+		NAME = "Silver",
+		ROAM_SPEED = 10,
+		CHASE_SPEED = 17, -- slower than a sprint — but sprinting risks LP
+		SIGHT_RANGE = 45,
+		SIGHT_INTERVAL = 0.3,
+		MEMORY_SECONDS = 3,
+		CATCH_DISTANCE = 4,
+		-- the grab minigame: click the cube as it crosses the center zone
+		GRAB_HITS = 5, -- perfect hits needed to wriggle free
+		GRAB_HIT_WINDOW = 0.14, -- timing tolerance (fraction of the bar around center)
+		GRAB_CUBE_PERIOD = 1.4, -- seconds per full cube swing at the start
+		GRAB_SPEEDUP = 1.12, -- cube speeds up this much per successful hit
+		GRAB_MIN_HIT_GAP = 0.3, -- server-side: hits closer together than this are ignored
+		GRAB_MAX_SECONDS = 15, -- failsafe: held at most this long
+		GRAB_IMMUNITY = 10, -- can't be re-grabbed right after escaping
+		GRAB_COOLDOWN = 6, -- Silver rests after any grab
+		SCISSORS_DISABLE = 8, -- cutting free stuns Silver this long
+	},
+	-- The hall sweepers: never catch anyone, just barrel down their route
+	-- and shove whoever they touch along with them.
+	SWEEPERS = {
+		GUIDELINES = {
+			NAME = "Guidelines",
+			SWEEP_SPEED = 26, -- faster than a sprint while mid-sweep
+			PUSH_SPEED = 30, -- how hard victims are carried along
+			SWEEP_RADIUS = 5,
+			WAIT_MIN = 4, -- rest at each end of the route
+			WAIT_MAX = 7,
+			SWEEPS_NPCS = true, -- also shoves the other characters (use it!)
+		},
+		SAI = {
+			NAME = "Sai",
+			SWEEP_SPEED = 23,
+			PUSH_SPEED = 27,
+			SWEEP_RADIUS = 5,
+			WAIT_MIN = 6,
+			WAIT_MAX = 10,
+			SWEEPS_NPCS = true,
+		},
 	},
 }
 
@@ -260,6 +330,8 @@ GameConfig.REMOTE_NAMES = {
 	"UseItem",
 	"SwapSlots",
 	"BuyItem",
+	"SilverHit", -- one successful timing hit in Silver's grab minigame
+	"SilverEscape", -- "use my scissors" while grabbed
 	-- server -> client
 	"GameCountdown",
 	"GameStarted",
@@ -277,6 +349,9 @@ GameConfig.REMOTE_NAMES = {
 	"DetentionReleased",
 	"SpeedDebuff",
 	"StaminaRestore",
+	"SilverGrab", -- you've been grabbed: open the minigame
+	"SilverReleased", -- grab over: close it
+	"SweptPush", -- a sweeper is carrying you: apply the push client-side
 }
 
 return GameConfig
@@ -312,6 +387,8 @@ local MapResolver = require(script.Parent.MapResolver)
 local ChatReviveAI = require(script.Parent.ChatReviveAI)
 local LpAI = require(script.Parent.LpAI)
 local FrostyAI = require(script.Parent.FrostyAI)
+local SilverAI = require(script.Parent.SilverAI)
+local SweeperAI = require(script.Parent.SweeperAI)
 local DetentionSystem = require(script.Parent.DetentionSystem)
 local ItemEconomy = require(script.Parent.ItemEconomy)
 local NotebookSpawner = require(script.Parent.NotebookSpawner)
@@ -338,11 +415,13 @@ MapResolver.resolve(ctx)
 -- before the first paths are computed (paths fail gracefully anyway).
 task.wait(1)
 
-DetentionSystem.init(ctx) -- before LpAI, which reads ctx.detention
+DetentionSystem.init(ctx) -- before LpAI/SilverAI, which read ctx.detention
 
 ChatReviveAI.init(ctx)
 LpAI.init(ctx)
 FrostyAI.init(ctx)
+SilverAI.init(ctx)
+SweeperAI.init(ctx) -- Guidelines + Sai
 
 ItemEconomy.init(ctx)
 NotebookSpawner.init(ctx)
@@ -577,6 +656,11 @@ function ChatReviveAI.init(ctx)
 		return cachedTarget
 	end
 
+	-- a ringing Alarm Clock overrides everything else he wants to do
+	local function getDistraction()
+		return ctx.economy and ctx.economy.getDistraction() or nil
+	end
+
 	-- ---------- chase ----------
 
 	local function chase(player)
@@ -586,6 +670,9 @@ function ChatReviveAI.init(ctx)
 		base:pursue(
 			function()
 				-- where to head for this leg, or nil to give up
+				if getDistraction() then
+					return nil -- that noise! (breaks off to investigate)
+				end
 				if not ctx.manager.isRoundActive() then
 					return nil
 				end
@@ -620,19 +707,48 @@ function ChatReviveAI.init(ctx)
 		)
 	end
 
+	-- walk to the ringing alarm and stand over it until it stops
+	local function investigate()
+		base:pursue(
+			function()
+				local d = getDistraction()
+				if not d then
+					return nil
+				end
+				if (d.position - base.root.Position).Magnitude < 5 then
+					return nil -- close enough; go stare at it
+				end
+				return d.position
+			end,
+			chaseSpeed
+		)
+		while base:canAct() do
+			local d = getDistraction()
+			if not d then
+				break
+			end
+			if (d.position - base.root.Position).Magnitude > 8 then
+				break -- got shoved away; the outer loop re-approaches
+			end
+			task.wait(0.2)
+		end
+	end
+
 	-- ---------- main brain loop ----------
 
 	task.spawn(function()
 		while true do
 			if not base:canAct() then
 				task.wait(0.2)
+			elseif getDistraction() then
+				investigate()
 			else
 				local target = findTarget()
 				if target then
 					chase(target)
 				else
 					base:roamStep(cfg.ROAM_SPEED, function()
-						return findTarget() ~= nil
+						return findTarget() ~= nil or getDistraction() ~= nil
 					end)
 				end
 			end
@@ -1075,8 +1191,13 @@ function GameManager.init(ctx)
 		if not humanoid or not hrp or humanoid.Health <= 0 then
 			return false
 		end
-		if hrp.Anchored then -- countdown or detention
-			return false
+		if hrp.Anchored then -- countdown or detention...
+			-- ...but a player in Silver's grasp stays fair game: getting
+			-- grabbed in the open with ChatRevive nearby SHOULD be lethal
+			local silver = ctx.npcs.Silver
+			if not (silver and silver.isGrabbing and silver.isGrabbing(player)) then
+				return false
+			end
 		end
 		if ctx.detention.isDetained(player) then
 			return false
@@ -1456,6 +1577,23 @@ function ItemEconomy.init(ctx)
 		return true
 	end
 
+	-- Take a specific item from either slot (slot 1 first). Used by systems
+	-- that consume items outside the normal slot-1 "use" flow, like Silver's
+	-- scissors escape. Returns true if the item was found and removed.
+	function self.consumeItem(player, itemId)
+		local state = getState(player)
+		if state.slots[1] == itemId then
+			state.slots[1] = state.slots[2]
+			state.slots[2] = nil
+		elseif state.slots[2] == itemId then
+			state.slots[2] = nil
+		else
+			return false
+		end
+		syncInventory(player)
+		return true
+	end
+
 	function self.syncAll(player)
 		syncInventory(player)
 		syncNickels(player)
@@ -1524,7 +1662,78 @@ function ItemEconomy.init(ctx)
 		pickup.Parent = ctx.map.pickupsFolder
 	end
 
+	-- ===================== alarm clock distraction =====================
+
+	local distraction = nil -- { position, expiresAt }
+	local alarmClock = nil -- the placed ringing prop
+
+	-- ChatRevive polls this: a ringing alarm overrides his usual hunting.
+	function self.getDistraction()
+		if distraction and os.clock() < distraction.expiresAt then
+			return distraction
+		end
+		return nil
+	end
+
+	local function stopAlarm()
+		distraction = nil
+		if alarmClock then
+			alarmClock:Destroy()
+			alarmClock = nil
+		end
+	end
+
+	local function placeAlarm(position)
+		stopAlarm()
+		local ringSeconds = config.ALARM_CLOCK.RING_SECONDS
+
+		local template = AssetResolver.itemTemplate("ALARM")
+		local clock
+		if template then
+			clock = AssetResolver.preparePropClone(template)
+			clock:PivotTo(CFrame.new(position + Vector3.new(0, 0.7, 0)))
+		else
+			clock = makePickupPart("AlarmClock", Color3.fromRGB(255, 150, 50), Vector3.new(1.2, 1.2, 0.8))
+			clock.CFrame = CFrame.new(position + Vector3.new(0, 0.6, 0))
+			local blink = Instance.new("PointLight")
+			blink.Color = Color3.fromRGB(255, 160, 60)
+			blink.Range = 8
+			blink.Brightness = 2
+			blink.Parent = clock
+		end
+
+		local soundParent = clock:IsA("BasePart") and clock
+			or clock.PrimaryPart
+			or clock:FindFirstChildWhichIsA("BasePart", true)
+		if soundParent then
+			local customRing = ctx.assets.SOUNDS.alarm
+			local ring = Instance.new("Sound")
+			ring.Name = "AlarmRing"
+			ring.SoundId = (customRing ~= "" and customRing) or "rbxasset://sounds/electronicpingshort.wav"
+			ring.Looped = true
+			ring.Volume = 1
+			ring.PlaybackSpeed = customRing ~= "" and 1 or 1.1
+			ring.RollOffMaxDistance = 150
+			ring.Parent = soundParent
+			pcall(function()
+				ring:Play()
+			end)
+		end
+
+		-- not a pickup: parent with the other transient props
+		clock.Parent = ctx.map.projectilesFolder
+		alarmClock = clock
+		distraction = { position = position, expiresAt = os.clock() + ringSeconds }
+
+		task.delay(ringSeconds, function()
+			if alarmClock == clock then
+				stopAlarm()
+			end
+		end)
+	end
+
 	function self.clearPickups()
+		stopAlarm()
 		ctx.map.pickupsFolder:ClearAllChildren()
 	end
 
@@ -1694,6 +1903,21 @@ function ItemEconomy.init(ctx)
 			state.slots[2] = nil
 			syncInventory(player)
 			ctx.remotes.StaminaRestore:FireClient(player)
+		elseif itemId == "ALARM" then
+			-- drop a ringing clock at your feet; ChatRevive investigates it
+			local character = player.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if not hrp then
+				return
+			end
+			state.slots[1] = state.slots[2]
+			state.slots[2] = nil
+			syncInventory(player)
+			placeAlarm(hrp.Position + Vector3.new(0, -1.5, 0))
+		elseif itemId == "SCISSORS" then
+			-- only useful mid-grab (the minigame fires SilverEscape); don't
+			-- waste the item on an empty snip
+			ctx.remotes.PickupFailed:FireClient(player, "Scissors only work while grabbed!")
 		elseif itemId == "BSODA" then
 			-- validate the client-supplied aim direction
 			if typeof(direction) ~= "Vector3" or direction.Magnitude < 0.01 or direction ~= direction then
@@ -1945,8 +2169,11 @@ function LpAI.init(ctx)
 		if not base:isActive() or not ctx.manager or not ctx.manager.isRoundActive() then
 			return
 		end
+		local silver = ctx.npcs.Silver
 		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
-			if not ctx.detention.hasImmunity(player) and not ctx.detention.isDetained(player) then
+			if not ctx.detention.hasImmunity(player)
+				and not ctx.detention.isDetained(player)
+				and not (silver and silver.isGrabbing(player)) then -- Silver's victim is Silver's
 				local hrp = targetRoot(player)
 				if hrp and (hrp.Position - base.root.Position).Magnitude < cfg.CATCH_DISTANCE then
 					ctx.detention.detain(player, cfg.DETENTION_SECONDS, cfg.NAME)
@@ -1989,7 +2216,10 @@ return LpAI
 	  │                   and VendingMachine_ZESTY (prompts auto-added).
 	  ├── Markers         invisible parts marking positions:
 	  │                   RoundSpawn (players start here, facing its front),
-	  │                   DetentionSpot, ChatReviveSpawn, LpSpawn, FrostySpawn
+	  │                   DetentionSpot, ChatReviveSpawn, LpSpawn,
+	  │                   FrostySpawn, SilverSpawn
+	  ├── SweepRoutes     optional; one folder per sweeper (Guidelines, Sai)
+	  │                   holding ordered parts (1, 2, 3...) it sweeps along
 	  ├── Waypoints       parts the NPCs roam between (8+ recommended)
 	  ├── NotebookSpawns  parts where notebooks may appear (10+ recommended;
 	  │                   parts you tag "NotebookSpawn" elsewhere also count)
@@ -2157,6 +2387,36 @@ function MapResolver.resolve(ctx)
 		end
 	end
 
+	-- ---------- sweep routes ----------
+	-- SweepRoutes/<SweeperName> is a folder of parts walked in name order
+	-- (1, 2, 3...), so a route can turn corners.
+	local sweepRoutes = {}
+	local routesFolder = root:FindFirstChild("SweepRoutes")
+	if routesFolder then
+		for _, routeFolder in ipairs(routesFolder:GetChildren()) do
+			local parts = {}
+			for _, child in ipairs(routeFolder:GetChildren()) do
+				if child:IsA("BasePart") then
+					table.insert(parts, child)
+				end
+			end
+			table.sort(parts, function(a, b)
+				return a.Name < b.Name
+			end)
+			if #parts >= 2 then
+				local points = {}
+				for _, part in ipairs(parts) do
+					table.insert(points, part.Position)
+				end
+				sweepRoutes[routeFolder.Name] = points
+			else
+				warn(string.format(
+					"[BaldiGame] BaldiMap/SweepRoutes/%s needs at least 2 parts to be a route.",
+					routeFolder.Name))
+			end
+		end
+	end
+
 	ctx.map = {
 		root = root,
 		geometry = geometry,
@@ -2176,10 +2436,12 @@ function MapResolver.resolve(ctx)
 			CHATREVIVE = markerCFrame(markers, "ChatReviveSpawn", 2, CFrame.new(90, 3, 0)),
 			LP = markerCFrame(markers, "LpSpawn", 2, CFrame.new(-75, 3, 0)),
 			FROSTY = markerCFrame(markers, "FrostySpawn", 2, CFrame.new(0, 3, 42)),
+			SILVER = markerCFrame(markers, "SilverSpawn", 2, CFrame.new(30, 3, -60)),
 		},
 		vendingMachines = vendingMachines,
 		nickelSpawns = nickelSpawns,
 		itemSpawns = itemSpawns,
+		sweepRoutes = sweepRoutes,
 	}
 	return ctx.map
 end
@@ -3270,13 +3532,14 @@ return NpcFactory
 
 	  BaldiMap
 	  ├── Geometry        (walls, floors, furniture, ExitDoor, LobbySpawn,
-	  │                    VendingMachine_BSODA, VendingMachine_ZESTY)
+	  │                    VendingMachine_<ITEMID> machines)
 	  ├── Markers         (RoundSpawn, DetentionSpot, ChatReviveSpawn,
-	  │                    LpSpawn, FrostySpawn — invisible parts)
+	  │                    LpSpawn, FrostySpawn, SilverSpawn — invisible parts)
+	  ├── SweepRoutes     (Guidelines / Sai folders of ordered route parts)
 	  ├── Waypoints       (invisible parts the NPCs roam between)
 	  ├── NotebookSpawns  (invisible parts; 10 are picked per round)
 	  ├── NickelSpawns    (invisible parts; starter coins)
-	  └── ItemSpawns      (invisible parts named BSODA / ZESTY)
+	  └── ItemSpawns      (invisible parts named after item ids)
 
 	Layout (top-down, studs). Floor top sits at Y = 0.
 	  School rectangle: X -96..96, Z -72..72
@@ -3488,6 +3751,9 @@ function PlaceholderMap.generate(config)
 	local markers = Instance.new("Folder")
 	markers.Name = "Markers"
 	markers.Parent = root
+	local sweepRoutes = Instance.new("Folder")
+	sweepRoutes.Name = "SweepRoutes"
+	sweepRoutes.Parent = root
 	local waypoints = Instance.new("Folder")
 	waypoints.Name = "Waypoints"
 	waypoints.Parent = root
@@ -3663,6 +3929,8 @@ function PlaceholderMap.generate(config)
 	-- ---------- vending machines (south hall, against the central block) ----------
 	buildVendingMachine(geometry, -16, 38.2, config.ITEMS.BSODA)
 	buildVendingMachine(geometry, 16, 38.2, config.ITEMS.ZESTY)
+	buildVendingMachine(geometry, -32, 38.2, config.ITEMS.SCISSORS)
+	buildVendingMachine(geometry, 32, 38.2, config.ITEMS.ALARM)
 
 	-- ---------- markers (the contract MapResolver reads) ----------
 	invisibleNode("RoundSpawn", CFrame.lookAt(Vector3.new(0, 1, -58), Vector3.new(0, 1, -30)), markers)
@@ -3670,6 +3938,20 @@ function PlaceholderMap.generate(config)
 	invisibleNode("ChatReviveSpawn", CFrame.new(90, 1, 0), markers) -- library east end
 	invisibleNode("LpSpawn", CFrame.new(-75, 1, 0), markers) -- gym center
 	invisibleNode("FrostySpawn", CFrame.new(0, 1, 42), markers) -- south hall
+	invisibleNode("SilverSpawn", CFrame.new(30, 1, -60), markers) -- classroom B
+
+	-- ---------- sweep routes (Guidelines: north hall, Sai: south hall) ----------
+	local guidelinesRoute = Instance.new("Folder")
+	guidelinesRoute.Name = "Guidelines"
+	guidelinesRoute.Parent = sweepRoutes
+	invisibleNode("1", CFrame.new(-48, 1, -42), guidelinesRoute)
+	invisibleNode("2", CFrame.new(48, 1, -42), guidelinesRoute)
+
+	local saiRoute = Instance.new("Folder")
+	saiRoute.Name = "Sai"
+	saiRoute.Parent = sweepRoutes
+	invisibleNode("1", CFrame.new(-48, 1, 42), saiRoute)
+	invisibleNode("2", CFrame.new(48, 1, 42), saiRoute)
 
 	-- ---------- AI waypoints ----------
 	local waypointSpots = {
@@ -3713,6 +3995,8 @@ function PlaceholderMap.generate(config)
 	end
 	invisibleNode("BSODA", CFrame.new(-22, 1.5, -60), itemSpawns) -- classroom A
 	invisibleNode("ZESTY", CFrame.new(18, 1.5, 60), itemSpawns) -- classroom D
+	invisibleNode("SCISSORS", CFrame.new(-75, 1.5, -16), itemSpawns) -- gym
+	invisibleNode("ALARM", CFrame.new(66, 1.5, -16), itemSpawns) -- library
 
 	-- ---------- lobby (menu area, away from the school) ----------
 	local lobbyFloor = basePart({
@@ -3797,6 +4081,523 @@ function RemoteSetup.init(ctx)
 end
 
 return RemoteSetup
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "SilverAI",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	SilverAI (ModuleScript, ServerScriptService.BaldiGame.SilverAI)
+
+	The grabber.
+	  - Roams between waypoints; chases any player it spots within
+	    SIGHT_RANGE (slower than a sprint — you can run, if you dare run).
+	  - On catch: GRABS the victim. They're locked in place and must win the
+	    timing minigame — click the moving cube inside the center zone
+	    GRAB_HITS times — to wriggle free. While held they're still fair
+	    game for ChatRevive, so a grab in the open is very bad news.
+	  - Safety Scissors (SilverEscape remote) cut you free instantly and
+	    leave Silver snipped (stunned) for SCISSORS_DISABLE seconds.
+	  - A BSODA hit on Silver mid-grab also frees the victim.
+	  - After any grab: the victim gets GRAB_IMMUNITY seconds of protection
+	    and Silver rests for GRAB_COOLDOWN before hunting again.
+
+	Server-side validation: the client only reports successful hits; the
+	server counts them and ignores hits closer together than
+	GRAB_MIN_HIT_GAP, plus a GRAB_MAX_SECONDS failsafe release.
+
+	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/Silver
+]]
+
+local RunService = game:GetService("RunService")
+
+local NpcFactory = require(script.Parent.NpcFactory)
+local NpcBase = require(script.Parent.NpcBase)
+
+local SilverAI = {}
+
+local COLOR_BODY = Color3.fromRGB(185, 190, 200)
+local COLOR_HEAD = Color3.fromRGB(215, 220, 230)
+
+function SilverAI.init(ctx)
+	local cfg = ctx.config.NPC.SILVER
+	local self = { ctx = ctx, cfg = cfg }
+
+	local model = NpcFactory.create({
+		name = cfg.NAME,
+		bodyColor = COLOR_BODY,
+		headColor = COLOR_HEAD,
+		tagColor = Color3.fromRGB(225, 230, 240),
+	}, ctx.map.npcFolder)
+	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.SILVER,
+		(cfg.ROAM_SPEED + cfg.CHASE_SPEED) / 2)
+	self.base = base
+	self.model = model
+
+	-- ---------- grab state ----------
+
+	local grabbed = nil -- { player, hits, lastHitAt, releaseAt }
+	local immunityUntil = {} -- [player] = time they can be grabbed again
+	local cooldownUntil = 0 -- Silver rests after a grab
+
+	function self.isGrabbing(player)
+		return grabbed ~= nil and grabbed.player == player
+	end
+
+	local function releaseGrab()
+		if not grabbed then
+			return
+		end
+		local player = grabbed.player
+		grabbed = nil
+		cooldownUntil = os.clock() + cfg.GRAB_COOLDOWN
+		immunityUntil[player] = os.clock() + cfg.GRAB_IMMUNITY
+
+		-- only unanchor players the grab itself anchored; someone who was
+		-- caught/detained/teleported mid-grab is another system's business
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if hrp and ctx.manager and ctx.manager.isParticipant(player)
+			and not ctx.detention.isDetained(player) then
+			hrp.Anchored = false
+		end
+		if player.Parent then
+			ctx.remotes.SilverReleased:FireClient(player)
+		end
+	end
+
+	local function startGrab(player, hrp)
+		grabbed = {
+			player = player,
+			hits = 0,
+			lastHitAt = 0,
+			releaseAt = os.clock() + cfg.GRAB_MAX_SECONDS,
+		}
+		hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+		hrp.Anchored = true
+
+		base:stop()
+		local look = Vector3.new(hrp.Position.X, base.root.Position.Y, hrp.Position.Z)
+		if (look - base.root.Position).Magnitude > 0.5 then
+			base.root.CFrame = CFrame.lookAt(base.root.Position, look)
+		end
+
+		ctx.remotes.SilverGrab:FireClient(player, cfg.GRAB_HITS)
+
+		-- watcher: ends the grab on timeout, a BSODA hit, the round ending,
+		-- or the victim being caught / leaving mid-grab
+		task.spawn(function()
+			while grabbed and grabbed.player == player do
+				if os.clock() > grabbed.releaseAt then
+					releaseGrab()
+					return
+				end
+				if base:isStunned() then -- BSODA'd mid-grab: victim slips free
+					releaseGrab()
+					return
+				end
+				if not ctx.manager.isRoundActive() or not ctx.manager.isParticipant(player) then
+					releaseGrab()
+					return
+				end
+				local character = player.Character
+				if not character or not character:FindFirstChild("HumanoidRootPart") then
+					releaseGrab()
+					return
+				end
+				task.wait(0.1)
+			end
+		end)
+	end
+
+	-- ---------- minigame remotes ----------
+
+	ctx.remotes.SilverHit.OnServerEvent:Connect(function(player)
+		if not grabbed or grabbed.player ~= player then
+			return
+		end
+		local now = os.clock()
+		if now - grabbed.lastHitAt < cfg.GRAB_MIN_HIT_GAP then
+			return -- too fast to be a real timing hit
+		end
+		grabbed.lastHitAt = now
+		grabbed.hits = grabbed.hits + 1
+		if grabbed.hits >= cfg.GRAB_HITS then
+			releaseGrab()
+		end
+	end)
+
+	ctx.remotes.SilverEscape.OnServerEvent:Connect(function(player)
+		if not grabbed or grabbed.player ~= player then
+			return
+		end
+		if ctx.economy.consumeItem(player, "SCISSORS") then
+			releaseGrab()
+			base:stun(cfg.SCISSORS_DISABLE, nil) -- snipped!
+		end
+	end)
+
+	-- ---------- target finding ----------
+
+	local function targetRoot(player)
+		local character = player and player.Character
+		return character and character:FindFirstChild("HumanoidRootPart") or nil
+	end
+
+	local function canGrab(player)
+		return (immunityUntil[player] or 0) <= os.clock()
+			and not ctx.detention.hasImmunity(player)
+	end
+
+	local lastScan = 0
+	local cachedTarget = nil
+
+	local function findVictim()
+		if os.clock() - lastScan < cfg.SIGHT_INTERVAL then
+			return cachedTarget
+		end
+		lastScan = os.clock()
+		cachedTarget = nil
+		if not ctx.manager or grabbed or os.clock() < cooldownUntil then
+			return nil
+		end
+		local bestDistance = math.huge
+		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
+			if canGrab(player) and not self.isGrabbing(player) then
+				local hrp = targetRoot(player)
+				if hrp and not hrp.Anchored then
+					local distance = (hrp.Position - base.root.Position).Magnitude
+					if distance < bestDistance and base:canSee(hrp, cfg.SIGHT_RANGE) then
+						bestDistance = distance
+						cachedTarget = player
+					end
+				end
+			end
+		end
+		return cachedTarget
+	end
+
+	-- ---------- chase ----------
+
+	local function chase(player)
+		local lastSeenAt = os.clock()
+		local lastKnown = nil
+
+		base:pursue(
+			function()
+				if grabbed or os.clock() < cooldownUntil then
+					return nil
+				end
+				if not ctx.manager.isRoundActive() then
+					return nil
+				end
+				local hrp = targetRoot(player)
+				if not hrp or hrp.Anchored or not ctx.manager.isTargetable(player) or not canGrab(player) then
+					return nil
+				end
+				if base:canSee(hrp, cfg.SIGHT_RANGE) then
+					lastSeenAt = os.clock()
+					lastKnown = hrp.Position
+					return lastKnown
+				end
+				if os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
+					return nil
+				end
+				if lastKnown and (lastKnown - base.root.Position).Magnitude < 4 then
+					return nil
+				end
+				return lastKnown
+			end,
+			function()
+				return cfg.CHASE_SPEED
+			end
+		)
+	end
+
+	-- ---------- main brain loop ----------
+
+	task.spawn(function()
+		while true do
+			if not base:canAct() or grabbed then
+				task.wait(0.2)
+			else
+				local victim = findVictim()
+				if victim then
+					chase(victim)
+				else
+					base:roamStep(cfg.ROAM_SPEED, function()
+						return findVictim() ~= nil
+					end)
+				end
+			end
+		end
+	end)
+
+	-- ---------- grab trigger ----------
+
+	RunService.Heartbeat:Connect(function()
+		if grabbed or not base:isActive() or os.clock() < cooldownUntil then
+			return
+		end
+		if not ctx.manager or not ctx.manager.isRoundActive() then
+			return
+		end
+		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
+			if canGrab(player) then
+				local hrp = targetRoot(player)
+				if hrp and not hrp.Anchored
+					and (hrp.Position - base.root.Position).Magnitude < cfg.CATCH_DISTANCE then
+					startGrab(player, hrp)
+					break
+				end
+			end
+		end
+	end)
+
+	function self.reset()
+		releaseGrab()
+		immunityUntil = {}
+		cooldownUntil = 0
+		base:resetToSpawn()
+	end
+
+	ctx.npcs.Silver = self
+	return self
+end
+
+return SilverAI
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "SweeperAI",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	SweeperAI (ModuleScript, ServerScriptService.BaldiGame.SweeperAI)
+
+	The hall sweepers — Guidelines and Sai (config: GameConfig.NPC.SWEEPERS).
+	  - Each barrels along its route end to end at SWEEP_SPEED, rests a few
+	    seconds, then sweeps back the other way. Forever.
+	  - Anyone within SWEEP_RADIUS mid-sweep is shoved along the sweep
+	    direction at PUSH_SPEED — never a catch or a game over, but being
+	    swept into ChatRevive's arms is your problem.
+	  - SWEEPS_NPCS: the other characters get shoved too. Baiting a sweeper
+	    into ChatRevive is a legitimate survival strategy.
+	  - BSODA stuns a sweeper; Frosty chills it (slow-motion sweep).
+
+	Routes come from your map: BaldiMap/SweepRoutes/<Name> — a folder of
+	parts, walked in name order (1, 2, 3...). No route? The sweeper picks
+	random waypoints to charge instead (and the Output suggests adding one).
+
+	Player pushes are applied CLIENT-side via the SweptPush remote (the
+	client owns its character's physics, so a server-side velocity write
+	would stutter); other NPCs are server-owned and pushed directly.
+
+	Custom rigs: ReplicatedStorage/BaldiAssets/Npcs/Guidelines and /Sai
+	Sweep sound: AssetConfig.SOUNDS.sweep (else a built-in swoosh)
+]]
+
+local RunService = game:GetService("RunService")
+
+local NpcFactory = require(script.Parent.NpcFactory)
+local NpcBase = require(script.Parent.NpcBase)
+
+local SweeperAI = {}
+
+local STYLES = {
+	GUIDELINES = {
+		bodyColor = Color3.fromRGB(240, 240, 235),
+		headColor = Color3.fromRGB(90, 90, 95),
+		tagColor = Color3.fromRGB(235, 235, 230),
+	},
+	SAI = {
+		bodyColor = Color3.fromRGB(70, 160, 150),
+		headColor = Color3.fromRGB(95, 200, 185),
+		tagColor = Color3.fromRGB(150, 230, 215),
+	},
+}
+
+local function reversed(list)
+	local out = {}
+	for index = #list, 1, -1 do
+		table.insert(out, list[index])
+	end
+	return out
+end
+
+local function createSweeper(ctx, key, cfg)
+	local self = { ctx = ctx, cfg = cfg, sweeping = false }
+	local style = STYLES[key] or STYLES.GUIDELINES
+
+	local route = ctx.map.sweepRoutes[cfg.NAME]
+	if not route then
+		print(string.format(
+			"[BaldiGame] No BaldiMap/SweepRoutes/%s folder — %s will charge random waypoints instead. "
+				.. "Add a folder of ordered parts to give it a proper hallway run.",
+			cfg.NAME, cfg.NAME))
+	end
+
+	-- spawn at the route start, else at a waypoint, else at the origin
+	local spawnPosition
+	if route then
+		spawnPosition = route[1]
+	else
+		local waypoint = ctx.map.waypointsFolder:FindFirstChildWhichIsA("BasePart")
+		spawnPosition = waypoint and waypoint.Position or Vector3.new(0, 1, 0)
+	end
+	local spawnCFrame = CFrame.new(spawnPosition + Vector3.new(0, 2.5, 0))
+
+	local model = NpcFactory.create({
+		name = cfg.NAME,
+		bodyColor = style.bodyColor,
+		headColor = style.headColor,
+		tagColor = style.tagColor,
+	}, ctx.map.npcFolder)
+	local base = NpcBase.new(ctx, model, spawnCFrame) -- sweepers never "chase"
+	self.base = base
+	self.model = model
+
+	local sweepSoundId = ctx.assets.SOUNDS.sweep
+	local whoosh = Instance.new("Sound")
+	whoosh.Name = "SweepSound"
+	whoosh.SoundId = (sweepSoundId ~= "" and sweepSoundId) or "rbxasset://sounds/swoosh.mp3"
+	whoosh.Looped = true
+	whoosh.Volume = 0.7
+	whoosh.PlaybackSpeed = sweepSoundId ~= "" and 1 or 0.85
+	whoosh.RollOffMaxDistance = 70
+	whoosh.Parent = base.root
+
+	local function setSweeping(on)
+		self.sweeping = on
+		pcall(function()
+			if on then
+				whoosh:Play()
+			else
+				whoosh:Stop()
+			end
+		end)
+	end
+
+	-- ---------- the sweep run loop ----------
+
+	local rng = Random.new()
+	local forward = true
+
+	task.spawn(function()
+		while true do
+			if not base:canAct() then
+				if self.sweeping then
+					setSweeping(false)
+				end
+				task.wait(0.2)
+			else
+				setSweeping(true)
+				base:setMoveSpeed(cfg.SWEEP_SPEED)
+				if route then
+					local points = forward and route or reversed(route)
+					for _, point in ipairs(points) do
+						if not base:canAct() then
+							break
+						end
+						local status = base:stepTo(point, nil, nil)
+						if status == "stuck" or status == "blocked" then
+							-- something's in the way: path around it
+							base:navigateTo(point, cfg.SWEEP_SPEED, nil)
+						end
+					end
+					forward = not forward
+				else
+					base:roamStep(cfg.SWEEP_SPEED, nil)
+				end
+				setSweeping(false)
+				base:stop()
+				task.wait(rng:NextNumber(cfg.WAIT_MIN, cfg.WAIT_MAX))
+			end
+		end
+	end)
+
+	-- ---------- the shove ----------
+
+	local pushRefire = {} -- [player] = next time we re-send their push
+
+	RunService.Heartbeat:Connect(function()
+		if not self.sweeping or not base:isActive() then
+			return
+		end
+		if not ctx.manager or not ctx.manager.isRoundActive() then
+			return
+		end
+
+		-- push along our actual direction of travel
+		local velocity = base.root.AssemblyLinearVelocity
+		local direction = Vector3.new(velocity.X, 0, velocity.Z)
+		if direction.Magnitude > 1 then
+			direction = direction.Unit
+		else
+			local look = base.root.CFrame.LookVector
+			direction = Vector3.new(look.X, 0, look.Z)
+			if direction.Magnitude < 0.01 then
+				return
+			end
+			direction = direction.Unit
+		end
+
+		local now = os.clock()
+		local rootPosition = base.root.Position
+
+		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
+			local character = player.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if hrp and not hrp.Anchored
+				and (hrp.Position - rootPosition).Magnitude < cfg.SWEEP_RADIUS then
+				if (pushRefire[player] or 0) <= now then
+					pushRefire[player] = now + 0.4
+					ctx.remotes.SweptPush:FireClient(player, direction, cfg.PUSH_SPEED, 0.55)
+				end
+			end
+		end
+
+		if cfg.SWEEPS_NPCS then
+			for _, npc in pairs(ctx.npcs) do
+				if npc ~= self and npc.base and npc.base.model.Parent then
+					local otherRoot = npc.base.root
+					if (otherRoot.Position - rootPosition).Magnitude < cfg.SWEEP_RADIUS then
+						otherRoot.AssemblyLinearVelocity = Vector3.new(
+							direction.X * cfg.PUSH_SPEED,
+							otherRoot.AssemblyLinearVelocity.Y,
+							direction.Z * cfg.PUSH_SPEED
+						)
+					end
+				end
+			end
+		end
+	end)
+
+	function self.reset()
+		setSweeping(false)
+		forward = true
+		pushRefire = {}
+		base:resetToSpawn()
+	end
+
+	ctx.npcs[cfg.NAME] = self
+	return self
+end
+
+function SweeperAI.init(ctx)
+	local sweepers = {}
+	for key, cfg in pairs(ctx.config.NPC.SWEEPERS) do
+		sweepers[key] = createSweeper(ctx, key, cfg)
+	end
+	return sweepers
+end
+
+return SweeperAI
 ]=====],
 	},
 	{
@@ -4596,6 +5397,10 @@ function ItemUseClient.init(ctx)
 		if visiblePrompts > 0 then
 			return -- this E press is for a notebook / vending prompt
 		end
+		local minigame = ctx.controllers.SilverMinigame
+		if minigame and minigame.active then
+			return -- this E press is a timing hit in Silver's grab minigame
+		end
 		if not self.slots[1] then
 			return
 		end
@@ -4669,6 +5474,7 @@ local INIT_ORDER = {
 	"VendingMachineUI",
 	"DetentionOverlay",
 	"FrostyVignette",
+	"SilverMinigame",
 	"MenuController",
 }
 
@@ -5048,6 +5854,241 @@ return MenuController
 	{
 		root = "StarterPlayerScripts",
 		folders = { "BaldiClient" },
+		name = "SilverMinigame",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	SilverMinigame (ModuleScript, StarterPlayerScripts.BaldiClient.SilverMinigame)
+
+	Shown while Silver has you grabbed. A cube slides back and forth along
+	a bar; click HIT (or press E, or tap the bar) exactly while the cube is
+	inside the center zone. Land GRAB_HITS perfect hits to wriggle free.
+	Each hit speeds the cube up. If you're carrying Safety Scissors, a CUT
+	FREE button escapes instantly (and leaves Silver snipped).
+
+	The server validates hits (minimum gap between them) and releases you;
+	this UI closes on the SilverReleased remote.
+
+	Your art: AssetConfig.IMAGES.SILVER_OVERLAY backs the screen.
+	Tuning lives in GameConfig.NPC.SILVER (window, period, speedup).
+]]
+
+local RunService = game:GetService("RunService")
+
+local SilverMinigame = {}
+
+function SilverMinigame.init(ctx)
+	local UiKit = require(script.Parent:WaitForChild("UiKit"))
+	local theme = UiKit.theme
+	local cfg = ctx.config.NPC.SILVER
+	local sounds = ctx.controllers.SoundController
+	local stamina = ctx.controllers.StaminaController
+	local self = { active = false }
+
+	local playerGui = ctx.player:WaitForChild("PlayerGui")
+	local gui = UiKit.new("ScreenGui", {
+		Name = "BaldiSilverGrab",
+		ResetOnSpawn = false,
+		DisplayOrder = 9,
+		IgnoreGuiInset = true,
+		Enabled = false,
+		Parent = playerGui,
+	})
+
+	UiKit.backdrop(gui, ctx.assets.IMAGES.SILVER_OVERLAY, Color3.fromRGB(18, 18, 26), 0.4)
+
+	UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.22),
+		Size = UDim2.new(0.9, 0, 0, 60),
+		Text = "SILVER GRABBED YOU!",
+		TextColor3 = Color3.fromRGB(220, 225, 235),
+		TextStrokeTransparency = 0,
+		Parent = gui,
+	})
+	UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.31),
+		Size = UDim2.new(0.9, 0, 0, 24),
+		Text = "Hit the cube in the green zone to wriggle free!",
+		TextColor3 = theme.textDim,
+		Parent = gui,
+	})
+
+	local progressLabel = UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.4),
+		Size = UDim2.fromOffset(200, 40),
+		Text = "0 / 5",
+		TextColor3 = theme.accent,
+		TextStrokeTransparency = 0,
+		Parent = gui,
+	})
+
+	-- ---------- the timing bar ----------
+
+	local barBack = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.52),
+		Size = UDim2.new(0.55, 0, 0, 34),
+		BackgroundColor3 = theme.panel,
+		Parent = gui,
+		UiKit.corner(10),
+	})
+	UiKit.stroke(Color3.fromRGB(0, 0, 0), 2, 0.4).Parent = barBack
+
+	-- the green target zone, centered, width = the timing window both ways
+	local zone = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(cfg.GRAB_HIT_WINDOW * 2, 0, 1, -6),
+		BackgroundColor3 = theme.green,
+		BackgroundTransparency = 0.35,
+		Parent = barBack,
+		UiKit.corner(8),
+	})
+
+	local cube = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.fromOffset(26, 26),
+		BackgroundColor3 = theme.white,
+		ZIndex = 2,
+		Parent = barBack,
+		UiKit.corner(6),
+	})
+	UiKit.stroke(Color3.fromRGB(0, 0, 0), 2).Parent = cube
+
+	local hitButton = UiKit.button({
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.66),
+		Size = UDim2.fromOffset(220, 64),
+		Text = "HIT!  [E]",
+		Parent = gui,
+	})
+
+	local scissorsButton = UiKit.button({
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.79),
+		Size = UDim2.fromOffset(260, 46),
+		Text = "CUT FREE (use Scissors)",
+		BackgroundColor3 = theme.panelLight,
+		TextColor3 = theme.textPrimary,
+		Visible = false,
+		Parent = gui,
+	})
+
+	-- ---------- behaviour ----------
+
+	local hits = 0
+	local hitsRequired = cfg.GRAB_HITS
+	local period = cfg.GRAB_CUBE_PERIOD
+	local clock = 0
+	local alpha = 0.5
+
+	local function hasScissors()
+		local items = ctx.controllers.ItemUseClient
+		return items ~= nil and (items.slots[1] == "SCISSORS" or items.slots[2] == "SCISSORS")
+	end
+
+	RunService.RenderStepped:Connect(function(dt)
+		if not self.active then
+			return
+		end
+		clock = clock + dt
+		alpha = 0.5 + 0.5 * math.sin(clock * math.pi * 2 / period)
+		cube.Position = UDim2.new(alpha, 0, 0.5, 0)
+	end)
+
+	local function attemptHit()
+		if not self.active then
+			return
+		end
+		if math.abs(alpha - 0.5) <= cfg.GRAB_HIT_WINDOW then
+			hits = hits + 1
+			period = period / cfg.GRAB_SPEEDUP -- faster every time
+			progressLabel.Text = hits .. " / " .. hitsRequired
+			ctx.remotes.SilverHit:FireServer()
+			sounds.play("click", 1 + hits * 0.12)
+			zone.BackgroundTransparency = 0
+			UiKit.tween(zone, 0.25, { BackgroundTransparency = 0.35 })
+			if hits >= hitsRequired then
+				progressLabel.Text = "FREE!"
+				progressLabel.TextColor3 = theme.green
+			end
+		else
+			sounds.play("error")
+			UiKit.shake(barBack, 8)
+		end
+	end
+
+	hitButton.Activated:Connect(attemptHit)
+	barBack.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			attemptHit()
+		end
+	end)
+	-- E doubles as the hit key (ItemUseClient yields to us while active)
+	ctx.controllers.InputHandler.onUse(function()
+		if self.active then
+			attemptHit()
+		end
+	end)
+
+	scissorsButton.Activated:Connect(function()
+		if self.active and hasScissors() then
+			ctx.remotes.SilverEscape:FireServer()
+		end
+	end)
+
+	-- ---------- open / close ----------
+
+	ctx.remotes.SilverGrab.OnClientEvent:Connect(function(required)
+		hits = 0
+		hitsRequired = required or cfg.GRAB_HITS
+		period = cfg.GRAB_CUBE_PERIOD
+		clock = 0
+		progressLabel.Text = "0 / " .. hitsRequired
+		progressLabel.TextColor3 = theme.accent
+		scissorsButton.Visible = hasScissors()
+		self.active = true
+		gui.Enabled = true
+		stamina.setSprintLocked(true)
+		sounds.play("grab")
+	end)
+
+	local function close()
+		if not self.active then
+			return
+		end
+		self.active = false
+		gui.Enabled = false
+		stamina.setSprintLocked(false)
+	end
+
+	ctx.remotes.SilverReleased.OnClientEvent:Connect(close)
+	ctx.remotes.RoundEnded.OnClientEvent:Connect(close)
+	ctx.remotes.PlayerLost.OnClientEvent:Connect(close)
+	ctx.remotes.PlayerWon.OnClientEvent:Connect(close)
+
+	-- keep the scissors button honest if inventory changes mid-grab
+	ctx.remotes.InventoryChanged.OnClientEvent:Connect(function()
+		if self.active then
+			scissorsButton.Visible = hasScissors()
+		end
+	end)
+
+	self.close = close
+	return self
+end
+
+return SilverMinigame
+]=====],
+	},
+	{
+		root = "StarterPlayerScripts",
+		folders = { "BaldiClient" },
 		name = "SoundController",
 		class = "ModuleScript",
 		source = [=====[
@@ -5078,6 +6119,8 @@ local LIBRARY = {
 	frost = { id = "rbxasset://sounds/swoosh.mp3", speed = 0.6, volume = 0.7 },
 	use = { id = "rbxasset://sounds/swoosh.mp3", speed = 1.2, volume = 0.6 },
 	win = { id = "", speed = 1.0, volume = 0.8 }, -- placeholder is the jingle below
+	grab = { id = "rbxasset://sounds/snap.mp3", speed = 0.7, volume = 0.9 }, -- Silver caught you
+	swept = { id = "rbxasset://sounds/swoosh.mp3", speed = 0.8, volume = 0.8 }, -- a sweeper hit you
 }
 
 function SoundController.init(ctx)
@@ -5165,10 +6208,15 @@ function StaminaController.init(ctx)
 		exhausted = false,
 		sprintHeld = false,
 		enabled = false,
-		sprintLocked = false, -- detention
+		sprintLocked = false, -- detention / Silver's grab
 		debuffMultiplier = 1,
 		debuffUntil = 0,
 	}
+
+	-- a sweeper carrying us: velocity applied here because the client owns
+	-- its own character's physics (a server write would stutter)
+	local pushVelocity = nil
+	local pushUntil = 0
 
 	local function getHumanoid()
 		local character = ctx.player.Character
@@ -5214,6 +6262,19 @@ function StaminaController.init(ctx)
 		end
 
 		humanoid.WalkSpeed = (sprinting and playerCfg.SPRINT_SPEED or playerCfg.WALK_SPEED) * multiplier
+
+		-- being swept: override horizontal velocity along the push
+		if pushVelocity and os.clock() < pushUntil then
+			local character = ctx.player.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if hrp and not hrp.Anchored then
+				hrp.AssemblyLinearVelocity = Vector3.new(
+					pushVelocity.X,
+					hrp.AssemblyLinearVelocity.Y,
+					pushVelocity.Z
+				)
+			end
+		end
 
 		local mode = "ok"
 		if self.exhausted then
@@ -5263,6 +6324,22 @@ function StaminaController.init(ctx)
 	ctx.remotes.StaminaRestore.OnClientEvent:Connect(function()
 		self.restoreFull()
 		ctx.controllers.SoundController.play("buy", 1.6)
+	end)
+
+	ctx.remotes.SweptPush.OnClientEvent:Connect(function(direction, speed, duration)
+		if typeof(direction) ~= "Vector3" or typeof(speed) ~= "number" then
+			return
+		end
+		local flat = Vector3.new(direction.X, 0, direction.Z)
+		if flat.Magnitude < 0.01 then
+			return
+		end
+		local wasPushed = pushVelocity ~= nil and os.clock() < pushUntil
+		pushVelocity = flat.Unit * speed
+		pushUntil = os.clock() + (typeof(duration) == "number" and duration or 0.5)
+		if not wasPushed then
+			ctx.controllers.SoundController.play("swept")
+		end
 	end)
 
 	return self

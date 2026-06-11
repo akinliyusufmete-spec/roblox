@@ -61,8 +61,13 @@ function GameManager.init(ctx)
 		if not humanoid or not hrp or humanoid.Health <= 0 then
 			return false
 		end
-		if hrp.Anchored then -- countdown or detention
-			return false
+		if hrp.Anchored then -- countdown or detention...
+			-- ...but a player in Silver's grasp stays fair game: getting
+			-- grabbed in the open with ChatRevive nearby SHOULD be lethal
+			local silver = ctx.npcs.Silver
+			if not (silver and silver.isGrabbing and silver.isGrabbing(player)) then
+				return false
+			end
 		end
 		if ctx.detention.isDetained(player) then
 			return false

@@ -15,7 +15,10 @@
 	  │                   and VendingMachine_ZESTY (prompts auto-added).
 	  ├── Markers         invisible parts marking positions:
 	  │                   RoundSpawn (players start here, facing its front),
-	  │                   DetentionSpot, ChatReviveSpawn, LpSpawn, FrostySpawn
+	  │                   DetentionSpot, ChatReviveSpawn, LpSpawn,
+	  │                   FrostySpawn, SilverSpawn
+	  ├── SweepRoutes     optional; one folder per sweeper (Guidelines, Sai)
+	  │                   holding ordered parts (1, 2, 3...) it sweeps along
 	  ├── Waypoints       parts the NPCs roam between (8+ recommended)
 	  ├── NotebookSpawns  parts where notebooks may appear (10+ recommended;
 	  │                   parts you tag "NotebookSpawn" elsewhere also count)
@@ -183,6 +186,36 @@ function MapResolver.resolve(ctx)
 		end
 	end
 
+	-- ---------- sweep routes ----------
+	-- SweepRoutes/<SweeperName> is a folder of parts walked in name order
+	-- (1, 2, 3...), so a route can turn corners.
+	local sweepRoutes = {}
+	local routesFolder = root:FindFirstChild("SweepRoutes")
+	if routesFolder then
+		for _, routeFolder in ipairs(routesFolder:GetChildren()) do
+			local parts = {}
+			for _, child in ipairs(routeFolder:GetChildren()) do
+				if child:IsA("BasePart") then
+					table.insert(parts, child)
+				end
+			end
+			table.sort(parts, function(a, b)
+				return a.Name < b.Name
+			end)
+			if #parts >= 2 then
+				local points = {}
+				for _, part in ipairs(parts) do
+					table.insert(points, part.Position)
+				end
+				sweepRoutes[routeFolder.Name] = points
+			else
+				warn(string.format(
+					"[BaldiGame] BaldiMap/SweepRoutes/%s needs at least 2 parts to be a route.",
+					routeFolder.Name))
+			end
+		end
+	end
+
 	ctx.map = {
 		root = root,
 		geometry = geometry,
@@ -202,10 +235,12 @@ function MapResolver.resolve(ctx)
 			CHATREVIVE = markerCFrame(markers, "ChatReviveSpawn", 2, CFrame.new(90, 3, 0)),
 			LP = markerCFrame(markers, "LpSpawn", 2, CFrame.new(-75, 3, 0)),
 			FROSTY = markerCFrame(markers, "FrostySpawn", 2, CFrame.new(0, 3, 42)),
+			SILVER = markerCFrame(markers, "SilverSpawn", 2, CFrame.new(30, 3, -60)),
 		},
 		vendingMachines = vendingMachines,
 		nickelSpawns = nickelSpawns,
 		itemSpawns = itemSpawns,
+		sweepRoutes = sweepRoutes,
 	}
 	return ctx.map
 end

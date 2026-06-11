@@ -30,10 +30,15 @@ function StaminaController.init(ctx)
 		exhausted = false,
 		sprintHeld = false,
 		enabled = false,
-		sprintLocked = false, -- detention
+		sprintLocked = false, -- detention / Silver's grab
 		debuffMultiplier = 1,
 		debuffUntil = 0,
 	}
+
+	-- a sweeper carrying us: velocity applied here because the client owns
+	-- its own character's physics (a server write would stutter)
+	local pushVelocity = nil
+	local pushUntil = 0
 
 	local function getHumanoid()
 		local character = ctx.player.Character
@@ -79,6 +84,19 @@ function StaminaController.init(ctx)
 		end
 
 		humanoid.WalkSpeed = (sprinting and playerCfg.SPRINT_SPEED or playerCfg.WALK_SPEED) * multiplier
+
+		-- being swept: override horizontal velocity along the push
+		if pushVelocity and os.clock() < pushUntil then
+			local character = ctx.player.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if hrp and not hrp.Anchored then
+				hrp.AssemblyLinearVelocity = Vector3.new(
+					pushVelocity.X,
+					hrp.AssemblyLinearVelocity.Y,
+					pushVelocity.Z
+				)
+			end
+		end
 
 		local mode = "ok"
 		if self.exhausted then
@@ -128,6 +146,22 @@ function StaminaController.init(ctx)
 	ctx.remotes.StaminaRestore.OnClientEvent:Connect(function()
 		self.restoreFull()
 		ctx.controllers.SoundController.play("buy", 1.6)
+	end)
+
+	ctx.remotes.SweptPush.OnClientEvent:Connect(function(direction, speed, duration)
+		if typeof(direction) ~= "Vector3" or typeof(speed) ~= "number" then
+			return
+		end
+		local flat = Vector3.new(direction.X, 0, direction.Z)
+		if flat.Magnitude < 0.01 then
+			return
+		end
+		local wasPushed = pushVelocity ~= nil and os.clock() < pushUntil
+		pushVelocity = flat.Unit * speed
+		pushUntil = os.clock() + (typeof(duration) == "number" and duration or 0.5)
+		if not wasPushed then
+			ctx.controllers.SoundController.play("swept")
+		end
 	end)
 
 	return self

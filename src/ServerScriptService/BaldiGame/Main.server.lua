@@ -22,6 +22,8 @@ local MapResolver = require(script.Parent.MapResolver)
 local ChatReviveAI = require(script.Parent.ChatReviveAI)
 local LpAI = require(script.Parent.LpAI)
 local FrostyAI = require(script.Parent.FrostyAI)
+local SilverAI = require(script.Parent.SilverAI)
+local SweeperAI = require(script.Parent.SweeperAI)
 local DetentionSystem = require(script.Parent.DetentionSystem)
 local ItemEconomy = require(script.Parent.ItemEconomy)
 local NotebookSpawner = require(script.Parent.NotebookSpawner)
@@ -48,11 +50,13 @@ MapResolver.resolve(ctx)
 -- before the first paths are computed (paths fail gracefully anyway).
 task.wait(1)
 
-DetentionSystem.init(ctx) -- before LpAI, which reads ctx.detention
+DetentionSystem.init(ctx) -- before LpAI/SilverAI, which read ctx.detention
 
 ChatReviveAI.init(ctx)
 LpAI.init(ctx)
 FrostyAI.init(ctx)
+SilverAI.init(ctx)
+SweeperAI.init(ctx) -- Guidelines + Sai
 
 ItemEconomy.init(ctx)
 NotebookSpawner.init(ctx)

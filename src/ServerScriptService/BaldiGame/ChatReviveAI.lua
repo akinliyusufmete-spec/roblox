@@ -102,6 +102,11 @@ function ChatReviveAI.init(ctx)
 		return cachedTarget
 	end
 
+	-- a ringing Alarm Clock overrides everything else he wants to do
+	local function getDistraction()
+		return ctx.economy and ctx.economy.getDistraction() or nil
+	end
+
 	-- ---------- chase ----------
 
 	local function chase(player)
@@ -111,6 +116,9 @@ function ChatReviveAI.init(ctx)
 		base:pursue(
 			function()
 				-- where to head for this leg, or nil to give up
+				if getDistraction() then
+					return nil -- that noise! (breaks off to investigate)
+				end
 				if not ctx.manager.isRoundActive() then
 					return nil
 				end
@@ -145,19 +153,48 @@ function ChatReviveAI.init(ctx)
 		)
 	end
 
+	-- walk to the ringing alarm and stand over it until it stops
+	local function investigate()
+		base:pursue(
+			function()
+				local d = getDistraction()
+				if not d then
+					return nil
+				end
+				if (d.position - base.root.Position).Magnitude < 5 then
+					return nil -- close enough; go stare at it
+				end
+				return d.position
+			end,
+			chaseSpeed
+		)
+		while base:canAct() do
+			local d = getDistraction()
+			if not d then
+				break
+			end
+			if (d.position - base.root.Position).Magnitude > 8 then
+				break -- got shoved away; the outer loop re-approaches
+			end
+			task.wait(0.2)
+		end
+	end
+
 	-- ---------- main brain loop ----------
 
 	task.spawn(function()
 		while true do
 			if not base:canAct() then
 				task.wait(0.2)
+			elseif getDistraction() then
+				investigate()
 			else
 				local target = findTarget()
 				if target then
 					chase(target)
 				else
 					base:roamStep(cfg.ROAM_SPEED, function()
-						return findTarget() ~= nil
+						return findTarget() ~= nil or getDistraction() ~= nil
 					end)
 				end
 			end

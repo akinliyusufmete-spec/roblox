@@ -40,6 +40,10 @@ function ItemUseClient.init(ctx)
 		if visiblePrompts > 0 then
 			return -- this E press is for a notebook / vending prompt
 		end
+		local minigame = ctx.controllers.SilverMinigame
+		if minigame and minigame.active then
+			return -- this E press is a timing hit in Silver's grab minigame
+		end
 		if not self.slots[1] then
 			return
 		end

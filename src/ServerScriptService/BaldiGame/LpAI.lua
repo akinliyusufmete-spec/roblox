@@ -170,8 +170,11 @@ function LpAI.init(ctx)
 		if not base:isActive() or not ctx.manager or not ctx.manager.isRoundActive() then
 			return
 		end
+		local silver = ctx.npcs.Silver
 		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
-			if not ctx.detention.hasImmunity(player) and not ctx.detention.isDetained(player) then
+			if not ctx.detention.hasImmunity(player)
+				and not ctx.detention.isDetained(player)
+				and not (silver and silver.isGrabbing(player)) then -- Silver's victim is Silver's
 				local hrp = targetRoot(player)
 				if hrp and (hrp.Position - base.root.Position).Magnitude < cfg.CATCH_DISTANCE then
 					ctx.detention.detain(player, cfg.DETENTION_SECONDS, cfg.NAME)

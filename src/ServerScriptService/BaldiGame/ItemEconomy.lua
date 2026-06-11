@@ -79,6 +79,23 @@ function ItemEconomy.init(ctx)
 		return true
 	end
 
+	-- Take a specific item from either slot (slot 1 first). Used by systems
+	-- that consume items outside the normal slot-1 "use" flow, like Silver's
+	-- scissors escape. Returns true if the item was found and removed.
+	function self.consumeItem(player, itemId)
+		local state = getState(player)
+		if state.slots[1] == itemId then
+			state.slots[1] = state.slots[2]
+			state.slots[2] = nil
+		elseif state.slots[2] == itemId then
+			state.slots[2] = nil
+		else
+			return false
+		end
+		syncInventory(player)
+		return true
+	end
+
 	function self.syncAll(player)
 		syncInventory(player)
 		syncNickels(player)
@@ -147,7 +164,78 @@ function ItemEconomy.init(ctx)
 		pickup.Parent = ctx.map.pickupsFolder
 	end
 
+	-- ===================== alarm clock distraction =====================
+
+	local distraction = nil -- { position, expiresAt }
+	local alarmClock = nil -- the placed ringing prop
+
+	-- ChatRevive polls this: a ringing alarm overrides his usual hunting.
+	function self.getDistraction()
+		if distraction and os.clock() < distraction.expiresAt then
+			return distraction
+		end
+		return nil
+	end
+
+	local function stopAlarm()
+		distraction = nil
+		if alarmClock then
+			alarmClock:Destroy()
+			alarmClock = nil
+		end
+	end
+
+	local function placeAlarm(position)
+		stopAlarm()
+		local ringSeconds = config.ALARM_CLOCK.RING_SECONDS
+
+		local template = AssetResolver.itemTemplate("ALARM")
+		local clock
+		if template then
+			clock = AssetResolver.preparePropClone(template)
+			clock:PivotTo(CFrame.new(position + Vector3.new(0, 0.7, 0)))
+		else
+			clock = makePickupPart("AlarmClock", Color3.fromRGB(255, 150, 50), Vector3.new(1.2, 1.2, 0.8))
+			clock.CFrame = CFrame.new(position + Vector3.new(0, 0.6, 0))
+			local blink = Instance.new("PointLight")
+			blink.Color = Color3.fromRGB(255, 160, 60)
+			blink.Range = 8
+			blink.Brightness = 2
+			blink.Parent = clock
+		end
+
+		local soundParent = clock:IsA("BasePart") and clock
+			or clock.PrimaryPart
+			or clock:FindFirstChildWhichIsA("BasePart", true)
+		if soundParent then
+			local customRing = ctx.assets.SOUNDS.alarm
+			local ring = Instance.new("Sound")
+			ring.Name = "AlarmRing"
+			ring.SoundId = (customRing ~= "" and customRing) or "rbxasset://sounds/electronicpingshort.wav"
+			ring.Looped = true
+			ring.Volume = 1
+			ring.PlaybackSpeed = customRing ~= "" and 1 or 1.1
+			ring.RollOffMaxDistance = 150
+			ring.Parent = soundParent
+			pcall(function()
+				ring:Play()
+			end)
+		end
+
+		-- not a pickup: parent with the other transient props
+		clock.Parent = ctx.map.projectilesFolder
+		alarmClock = clock
+		distraction = { position = position, expiresAt = os.clock() + ringSeconds }
+
+		task.delay(ringSeconds, function()
+			if alarmClock == clock then
+				stopAlarm()
+			end
+		end)
+	end
+
 	function self.clearPickups()
+		stopAlarm()
 		ctx.map.pickupsFolder:ClearAllChildren()
 	end
 
@@ -317,6 +405,21 @@ function ItemEconomy.init(ctx)
 			state.slots[2] = nil
 			syncInventory(player)
 			ctx.remotes.StaminaRestore:FireClient(player)
+		elseif itemId == "ALARM" then
+			-- drop a ringing clock at your feet; ChatRevive investigates it
+			local character = player.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if not hrp then
+				return
+			end
+			state.slots[1] = state.slots[2]
+			state.slots[2] = nil
+			syncInventory(player)
+			placeAlarm(hrp.Position + Vector3.new(0, -1.5, 0))
+		elseif itemId == "SCISSORS" then
+			-- only useful mid-grab (the minigame fires SilverEscape); don't
+			-- waste the item on an empty snip
+			ctx.remotes.PickupFailed:FireClient(player, "Scissors only work while grabbed!")
 		elseif itemId == "BSODA" then
 			-- validate the client-supplied aim direction
 			if typeof(direction) ~= "Vector3" or direction.Magnitude < 0.01 or direction ~= direction then

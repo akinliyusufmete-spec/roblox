@@ -26,6 +26,7 @@ AssetConfig.IMAGES = {
 	LOSE_BACKGROUND = "", -- CAUGHT! screen
 	DETENTION_BACKGROUND = "", -- detention overlay (semi-transparent works best)
 	FROST_OVERLAY = "", -- Frosty chill overlay (transparent PNG, icy edges)
+	SILVER_OVERLAY = "", -- Silver grab minigame backdrop (semi-transparent PNG)
 
 	-- HUD pieces
 	NOTEBOOK_ICON = "", -- little notebook next to the counter (top left)
@@ -43,16 +44,20 @@ AssetConfig.IMAGES = {
 	ITEMS = {
 		BSODA = "",
 		ZESTY = "",
+		SCISSORS = "",
+		ALARM = "",
 	},
 }
 
 -- ========== sounds ==========
 -- Client feedback sounds (played by SoundController):
 --   click, collect, nickel, buy, error, exhausted, caught, detention,
---   frost, use, win
--- Server NPC sounds:
+--   frost, use, win, grab (Silver caught you), swept (a sweeper hit you)
+-- Server NPC/world sounds:
 --   chase   = ChatRevive's repeating chase noise (the "slap")
 --   whistle = LP's alert when he starts chasing
+--   sweep   = looping noise a sweeper makes mid-sweep
+--   alarm   = the placed Alarm Clock's ringing loop
 AssetConfig.SOUNDS = {
 	click = "",
 	collect = "",
@@ -65,8 +70,12 @@ AssetConfig.SOUNDS = {
 	frost = "",
 	use = "",
 	win = "",
+	grab = "",
+	swept = "",
 	chase = "",
 	whistle = "",
+	sweep = "",
+	alarm = "",
 }
 
 return AssetConfig

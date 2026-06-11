@@ -59,13 +59,18 @@ door turns green → touch it to escape. Your time is tracked; beat your best.
 
 | Character | Archetype | Behaviour |
 |---|---|---|
-| **ChatRevive** | Relentless hunter | **Knows where you are from anywhere** and continuously re-paths to your live position — round a corner and he follows you in, he doesn't forget. Keep distance only by sprinting (24 vs his 19), stun him (BSODA), chill him (Frosty), or reach the exit. Catch = game over + drops a Nickel. **Enrages at 10/10 notebooks** (speed 23). |
+| **ChatRevive** | Relentless hunter | **Knows where you are from anywhere** and continuously re-paths to your live position — round a corner and he follows you in, he doesn't forget. Keep distance only by sprinting (24 vs his 19), stun him (BSODA), chill him (Frosty), or reach the exit. Catch = game over + drops a Nickel. **Enrages at 10/10 notebooks** (speed 23). An **Alarm Clock**'s ringing pulls him away from anything else. |
 | **LP** | Rule enforcer | Ignores you until he **sees** you moving **faster than 20** (sprint = 24, walk = 16). Once provoked he chases your live position and **speeds up while you keep running** (25 — faster than a sprint), easing back to 18 when you walk. Escape = stop running *and* break his line of sight. Caught = **15s detention**, not game over. |
-| **Frosty** | Passive roamer | Never chases. Within 7 studs you're chilled: 0.4× speed for 4s (chills ChatRevive and LP too — lead them through him!). |
+| **Frosty** | Passive roamer | Never chases. Within 7 studs you're chilled: 0.4× speed for 4s (chills the other characters too — lead them through him!). |
+| **Silver** | Grabber | Stalks on sight (speed 17 — outrunnable, if you dare sprint). Caught = **grabbed**: locked in place until you win the timing minigame — click the cube in the green zone **5 times** (it speeds up each hit). You're still catchable while held, so a grab with ChatRevive nearby is lethal. **Scissors** cut you free instantly and snip Silver for 8s; a BSODA hit on Silver also frees you. |
+| **Guidelines** | Hall sweeper | Periodically barrels down its route (speed 26 — faster than you) and **shoves everyone it touches along with it**. Never a game over, but it can sweep you into trouble. It shoves the other characters too — bait it into ChatRevive! |
+| **Sai** | Hall sweeper | Guidelines' calmer sibling: a different route, slower (23), longer rests. Same shove. |
 
 **Items** (2 slots, slot 1 active): **BSODA** knocks a character back 20 studs
-and stuns 3s. **Zesty Bar** refills stamina instantly. **Nickels** are
-currency for the two vending machines.
+and stuns 3s. **Zesty Bar** refills stamina instantly. **Safety Scissors**
+escape Silver's grab (only usable while grabbed). **Alarm Clock** drops at
+your feet and rings — ChatRevive investigates the noise for 12s. **Nickels**
+are currency for the four vending machines.
 
 **Stamina:** sprint drains 10/s, regen 6/s; at 0 you're exhausted and sprint
 locks until 30.
@@ -90,11 +95,13 @@ ServerScriptService
     ├── NpcBase                (ModuleScript)  — pathfinding/LoS/stun/slow shared base
     ├── GameManager            (ModuleScript)  — round state machine, win/lose, gating
     ├── NotebookSpawner        (ModuleScript)  — Fisher-Yates pick of YOUR spawn points
-    ├── ChatReviveAI           (ModuleScript)  — on-sight chaser
+    ├── ChatReviveAI           (ModuleScript)  — relentless hunter (+ alarm distraction)
     ├── LpAI                   (ModuleScript)  — condition chaser (speed + LoS)
     ├── FrostyAI               (ModuleScript)  — passive roamer + proximity debuff
+    ├── SilverAI               (ModuleScript)  — grabber + timing-minigame validation
+    ├── SweeperAI              (ModuleScript)  — Guidelines & Sai hall sweepers
     ├── DetentionSystem        (ModuleScript)  — teleport, anchor, countdown, release
-    ├── ItemEconomy            (ModuleScript)  — inventory, nickels, vending, BSODA
+    ├── ItemEconomy            (ModuleScript)  — inventory, nickels, vending, item effects
     └── ExitDoorManager        (ModuleScript)  — locked/open door, win trigger
 
 ReplicatedStorage
@@ -102,9 +109,10 @@ ReplicatedStorage
 │   ├── GameConfig             (ModuleScript)  — every tunable number
 │   └── AssetConfig            (ModuleScript)  — PASTE YOUR image/sound ids here
 ├── BaldiAssets                (Folder)        — YOU create this (see STUDIO_SETUP.md)
-│   ├── Npcs                   — ChatRevive / LP / Frosty rigs (+ Animations folders)
-│   └── Items                  — Notebook / Nickel / BSODA / ZESTY models
-├── BaldiRemotes               (Folder)        — 20 RemoteEvents (created at runtime)
+│   ├── Npcs                   — ChatRevive / LP / Frosty / Silver / Guidelines / Sai
+│   │                            rigs (+ Animations folders)
+│   └── Items                  — Notebook / Nickel / BSODA / ZESTY / SCISSORS / ALARM
+├── BaldiRemotes               (Folder)        — 25 RemoteEvents (created at runtime)
 └── BaldiModels                (Folder)        — placeholder notebook (runtime, fallback only)
 
 StarterPlayer
@@ -120,16 +128,18 @@ StarterPlayer
         ├── VendingMachineUI   (ModuleScript)  — buy popup
         ├── DetentionOverlay   (ModuleScript)  — countdown overlay
         ├── FrostyVignette     (ModuleScript)  — icy screen edges
+        ├── SilverMinigame     (ModuleScript)  — grab escape: timing-bar minigame
         └── MenuController     (ModuleScript)  — menu, countdown, win/lose screens
 
 Workspace
 └── BaldiMap                   (Folder)        — YOUR map (or the generated placeholder)
     ├── Geometry               — your school; ExitDoor, LobbySpawn, vending machines
-    ├── Markers                — RoundSpawn, DetentionSpot, 3 NPC spawn points
+    ├── Markers                — RoundSpawn, DetentionSpot, 4 NPC spawn points
+    ├── SweepRoutes            — optional Guidelines / Sai route folders
     ├── Waypoints              — parts the NPCs roam between
     ├── NotebookSpawns         — parts where notebooks may appear (10 picked/round)
     ├── NickelSpawns           — optional starter-coin points
-    ├── ItemSpawns             — optional free BSODA/ZESTY points
+    ├── ItemSpawns             — optional free BSODA/ZESTY/SCISSORS/ALARM points
     └── Notebooks / Pickups / Npcs / Projectiles   — runtime containers
 ```
 
@@ -173,5 +183,13 @@ Workspace
 - [ ] Vending machines: prompt → popup → buying with 0 Nickels fails politely.
 - [ ] BSODA knocks a character back 20 studs and stuns (white flash).
 - [ ] Zesty refills stamina mid-exhaustion.
+- [ ] Silver grabs you → timing minigame; 5 zone hits free you; the cube
+      speeds up each hit; you're immune to re-grabs for a few seconds.
+- [ ] Scissors: CUT FREE button escapes instantly; Silver flashes white
+      (snipped) for 8s. Using scissors outside a grab politely refuses.
+- [ ] Guidelines/Sai sweep their halls on a cycle and shove you (and the
+      other characters) along; the shove ends when the sweep ends.
+- [ ] Alarm Clock: place it, run — ChatRevive beelines to the ringing and
+      stares at it until it stops.
 - [ ] 10/10: "GET TO THE EXIT!", door green, ChatRevive enraged.
 - [ ] Green door → ESCAPED! with time + session best; Retry restarts.

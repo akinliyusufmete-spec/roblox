@@ -25,6 +25,8 @@ local LIBRARY = {
 	frost = { id = "rbxasset://sounds/swoosh.mp3", speed = 0.6, volume = 0.7 },
 	use = { id = "rbxasset://sounds/swoosh.mp3", speed = 1.2, volume = 0.6 },
 	win = { id = "", speed = 1.0, volume = 0.8 }, -- placeholder is the jingle below
+	grab = { id = "rbxasset://sounds/snap.mp3", speed = 0.7, volume = 0.9 }, -- Silver caught you
+	swept = { id = "rbxasset://sounds/swoosh.mp3", speed = 0.8, volume = 0.8 }, -- a sweeper hit you
 }
 
 function SoundController.init(ctx)

@@ -48,6 +48,22 @@ GameConfig.ITEMS = {
 		cost = 1,
 		color = { 250, 200, 40 },
 	},
+	SCISSORS = {
+		id = "SCISSORS",
+		displayName = "Safety Scissors",
+		shortLabel = "SNIP",
+		description = "Cut yourself free the instant Silver grabs you — and Silver stays snipped for a while. Only works while grabbed.",
+		cost = 1,
+		color = { 210, 210, 220 },
+	},
+	ALARM = {
+		id = "ALARM",
+		displayName = "Alarm Clock",
+		shortLabel = "ALARM",
+		description = "Drops at your feet and rings loudly. ChatRevive can't resist investigating the noise.",
+		cost = 1,
+		color = { 255, 150, 50 },
+	},
 }
 
 GameConfig.INVENTORY_SLOTS = 2
@@ -63,6 +79,10 @@ GameConfig.BSODA_PROJECTILE = {
 	PUSH_DURATION = 0.5,
 	STUN_SECONDS = 3,
 	HIT_RADIUS = 4,
+}
+
+GameConfig.ALARM_CLOCK = {
+	RING_SECONDS = 12, -- how long a placed alarm distracts ChatRevive
 }
 
 -- ========== NPCs ==========
@@ -118,7 +138,48 @@ GameConfig.NPC = {
 		DEBUFF_SECONDS = 4,
 		DEBUFF_MULTIPLIER = 0.4, -- WalkSpeed becomes base * 0.4
 		DEBUFF_COOLDOWN = 4, -- per victim
-		SLOWS_NPCS = true, -- Frosty also chills ChatRevive / LP that wander too close
+		SLOWS_NPCS = true, -- Frosty also chills any character that wanders too close
+	},
+	SILVER = {
+		NAME = "Silver",
+		ROAM_SPEED = 10,
+		CHASE_SPEED = 17, -- slower than a sprint — but sprinting risks LP
+		SIGHT_RANGE = 45,
+		SIGHT_INTERVAL = 0.3,
+		MEMORY_SECONDS = 3,
+		CATCH_DISTANCE = 4,
+		-- the grab minigame: click the cube as it crosses the center zone
+		GRAB_HITS = 5, -- perfect hits needed to wriggle free
+		GRAB_HIT_WINDOW = 0.14, -- timing tolerance (fraction of the bar around center)
+		GRAB_CUBE_PERIOD = 1.4, -- seconds per full cube swing at the start
+		GRAB_SPEEDUP = 1.12, -- cube speeds up this much per successful hit
+		GRAB_MIN_HIT_GAP = 0.3, -- server-side: hits closer together than this are ignored
+		GRAB_MAX_SECONDS = 15, -- failsafe: held at most this long
+		GRAB_IMMUNITY = 10, -- can't be re-grabbed right after escaping
+		GRAB_COOLDOWN = 6, -- Silver rests after any grab
+		SCISSORS_DISABLE = 8, -- cutting free stuns Silver this long
+	},
+	-- The hall sweepers: never catch anyone, just barrel down their route
+	-- and shove whoever they touch along with them.
+	SWEEPERS = {
+		GUIDELINES = {
+			NAME = "Guidelines",
+			SWEEP_SPEED = 26, -- faster than a sprint while mid-sweep
+			PUSH_SPEED = 30, -- how hard victims are carried along
+			SWEEP_RADIUS = 5,
+			WAIT_MIN = 4, -- rest at each end of the route
+			WAIT_MAX = 7,
+			SWEEPS_NPCS = true, -- also shoves the other characters (use it!)
+		},
+		SAI = {
+			NAME = "Sai",
+			SWEEP_SPEED = 23,
+			PUSH_SPEED = 27,
+			SWEEP_RADIUS = 5,
+			WAIT_MIN = 6,
+			WAIT_MAX = 10,
+			SWEEPS_NPCS = true,
+		},
 	},
 }
 
@@ -130,6 +191,8 @@ GameConfig.REMOTE_NAMES = {
 	"UseItem",
 	"SwapSlots",
 	"BuyItem",
+	"SilverHit", -- one successful timing hit in Silver's grab minigame
+	"SilverEscape", -- "use my scissors" while grabbed
 	-- server -> client
 	"GameCountdown",
 	"GameStarted",
@@ -147,6 +210,9 @@ GameConfig.REMOTE_NAMES = {
 	"DetentionReleased",
 	"SpeedDebuff",
 	"StaminaRestore",
+	"SilverGrab", -- you've been grabbed: open the minigame
+	"SilverReleased", -- grab over: close it
+	"SweptPush", -- a sweeper is carrying you: apply the push client-side
 }
 
 return GameConfig

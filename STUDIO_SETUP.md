@@ -31,6 +31,8 @@ then copy each file's contents from `src/` into the matching script:
 | `BaldiGame/ChatReviveAI` | ModuleScript | `.../ChatReviveAI.lua` |
 | `BaldiGame/LpAI` | ModuleScript | `.../LpAI.lua` |
 | `BaldiGame/FrostyAI` | ModuleScript | `.../FrostyAI.lua` |
+| `BaldiGame/SilverAI` | ModuleScript | `.../SilverAI.lua` |
+| `BaldiGame/SweeperAI` | ModuleScript | `.../SweeperAI.lua` |
 | `BaldiGame/DetentionSystem` | ModuleScript | `.../DetentionSystem.lua` |
 | `BaldiGame/ItemEconomy` | ModuleScript | `.../ItemEconomy.lua` |
 | `BaldiGame/ExitDoorManager` | ModuleScript | `.../ExitDoorManager.lua` |
@@ -48,6 +50,7 @@ then copy each file's contents from `src/` into the matching script:
 | `BaldiClient/VendingMachineUI` | ModuleScript | `.../VendingMachineUI.lua` |
 | `BaldiClient/DetentionOverlay` | ModuleScript | `.../DetentionOverlay.lua` |
 | `BaldiClient/FrostyVignette` | ModuleScript | `.../FrostyVignette.lua` |
+| `BaldiClient/SilverMinigame` | ModuleScript | `.../SilverMinigame.lua` |
 | `BaldiClient/MenuController` | ModuleScript | `.../MenuController.lua` |
 
 Watch the class types: `Main` under BaldiGame is a **Script**, `Main` under
@@ -75,21 +78,27 @@ Workspace
     │   ├── ExitDoor      ← a Part — turns green and wins the game when touched
     │   ├── LobbySpawn    ← a SpawnLocation — players wait here while in the menu
     │   │                   (put it in a separate room away from the school!)
-    │   ├── VendingMachine_BSODA   ← optional Part/Model; prompt added for you
-    │   └── VendingMachine_ZESTY   ← optional Part/Model
+    │   ├── VendingMachine_BSODA      ← optional Part/Model; prompt added for you
+    │   ├── VendingMachine_ZESTY      ← optional Part/Model
+    │   ├── VendingMachine_SCISSORS   ← optional Part/Model
+    │   └── VendingMachine_ALARM      ← optional Part/Model
     ├── Markers           ← invisible anchored parts marking positions:
     │   ├── RoundSpawn        players start a round here, facing the part's front
     │   ├── DetentionSpot     where LP's victims get locked
     │   ├── ChatReviveSpawn   ┐
     │   ├── LpSpawn           ├ where each character stands at round start
-    │   └── FrostySpawn       ┘
+    │   ├── FrostySpawn       │
+    │   └── SilverSpawn       ┘
+    ├── SweepRoutes       ← optional; one folder per sweeper holding its route:
+    │   ├── Guidelines        parts named 1, 2, 3... walked in order, then
+    │   └── Sai               reversed. 2 parts = a straight hallway run.
     ├── Waypoints         ← invisible anchored parts; NPCs roam between them.
     │                       Spread 10–20 around halls and rooms.
     ├── NotebookSpawns    ← invisible anchored parts; 10 are picked at random
     │                       each round. Place 15–25 for good variety.
     ├── NickelSpawns      ← optional; a couple of starter coins appear here
-    └── ItemSpawns        ← optional; parts named exactly BSODA / ZESTY give
-                            one free pickup of each per round
+    └── ItemSpawns        ← optional; parts named exactly BSODA / ZESTY /
+                            SCISSORS / ALARM give one free pickup each per round
 ```
 
 Tips:
@@ -121,7 +130,10 @@ ReplicatedStorage
     └── Npcs
         ├── ChatRevive    ← Model
         ├── LP            ← Model
-        └── Frosty        ← Model
+        ├── Frosty        ← Model
+        ├── Silver        ← Model (the grabber)
+        ├── Guidelines    ← Model (hall sweeper)
+        └── Sai           ← Model (hall sweeper)
 ```
 
 Rig requirements (R6, R15, or a custom skinned mesh all work):
@@ -180,6 +192,9 @@ ReplicatedStorage
         ├── Nickel             ← the coin pickup
         ├── BSODA              ← the world pickup can
         ├── ZESTY              ← the world pickup bar
+        ├── SCISSORS           ← the world pickup scissors
+        ├── ALARM              ← the alarm clock (pickup AND the placed,
+        │                        ringing version when used)
         └── BsodaProjectile    ← optional: the flying blast visual
 ```
 

@@ -38,6 +38,7 @@ local INIT_ORDER = {
 	"VendingMachineUI",
 	"DetentionOverlay",
 	"FrostyVignette",
+	"SilverMinigame",
 	"MenuController",
 }
 
