@@ -96,7 +96,14 @@ Tips:
 
 - Make marker/waypoint parts **Anchored**, CanCollide off, Transparency 1,
   and place them roughly at floor level — heights are corrected in code.
-- Keep doorways at least ~8 studs wide so the pathfinding fits through.
+- Keep doorways at least ~5 studs wide (8+ is comfortable) so the pathfinding
+  agent fits through. **Doorways that are too narrow are the #1 reason NPCs
+  won't follow you into a room.** A door part set `CanCollide = false` is
+  ignored by pathfinding entirely (they walk right through it) — so the gap
+  in the *wall* is what matters, not the door panel. If a real door swings,
+  toggle its `CanCollide` rather than relying on the panel to block.
+- Spread several **Waypoints** through every room and hall. NPCs roam between
+  them; a room with no nearby waypoint rarely gets patrolled.
 - Anything missing prints a warning with the expected path; missing markers
   fall back to default coordinates (which suit the placeholder school, not
   yours — so add all five markers early).
@@ -144,8 +151,24 @@ ChatRevive
 ```
 
 All three are optional. Tracks loop and crossfade automatically; Frosty
-never plays Chase. (Animations must be published from the Animation Editor
-to your account/group for the ids to load.)
+never plays Chase.
+
+**If your animations don't play, check the Output window** — the loader
+prints exactly what happened for each rig: `loaded N custom animation(s)`,
+or a warning naming any animation whose id is blank or failed to load. The
+two usual causes:
+
+- **The AnimationId is blank.** Each `Animation` instance needs its
+  `AnimationId` set to your published id (`rbxassetid://…`).
+- **The id isn't published to this game's owner.** An animation only loads
+  if it was published from the Animation Editor to the **same** account or
+  group that owns this place. Re-export it under the right owner.
+
+Until a rig has working animations, it still **moves**: any standard R6 rig
+(and the placeholder block characters) falls back to a code-driven
+limb-swing walk, so you always see motion while you wire up the real ones.
+A custom skinned mesh with no `Animations` folder will stand still — give it
+the folder above.
 
 ## 4. Your item models
 

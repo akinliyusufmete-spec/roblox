@@ -67,37 +67,54 @@ GameConfig.BSODA_PROJECTILE = {
 
 -- ========== NPCs ==========
 GameConfig.NPC = {
+	-- How often a chasing NPC recomputes its path to your live position.
+	-- Lower = tighter tracking (less "goldfish"), slightly more CPU.
+	REPATH_INTERVAL = 0.3,
+
+	-- Pathfinding agent shape, shared by every NPC. A small radius fits
+	-- through hand-made doorways; jumping clears small thresholds/lips and
+	-- lets a wedged NPC hop free. Make doorways at least ~5 studs wide.
+	AGENT = {
+		RADIUS = 2,
+		HEIGHT = 5,
+		JUMP = true,
+		JUMP_HEIGHT = 4,
+	},
+
 	CHATREVIVE = {
 		NAME = "ChatRevive",
-		ROAM_SPEED = 10,
-		CHASE_SPEED = 18.5, -- sprint (24) outruns it, walking (16) does not
-		ENRAGED_CHASE_SPEED = 22, -- after all notebooks are collected
-		ENRAGED_SIGHT_INTERVAL = 0.15,
-		SIGHT_RANGE = 70,
-		SIGHT_INTERVAL = 0.3,
-		REPATH_INTERVAL = 0.5,
-		MEMORY_SECONDS = 3, -- keeps chasing last-known position this long after losing sight
+		-- Knows where the nearest player is from anywhere on the map and
+		-- hunts relentlessly. Set false to require line of sight within
+		-- SIGHT_RANGE instead.
+		OMNISCIENT = true,
+		ROAM_SPEED = 11,
+		CHASE_SPEED = 19, -- sprint (24) outruns it, walking (16) does not
+		ENRAGED_CHASE_SPEED = 23, -- after all notebooks are collected
+		ENRAGED_SIGHT_INTERVAL = 0.12,
+		SIGHT_RANGE = 200, -- only used when OMNISCIENT = false
+		SIGHT_INTERVAL = 0.25, -- how often he re-picks the nearest target
+		MEMORY_SECONDS = 6, -- chases last-known position this long after losing sight
 		CATCH_DISTANCE = 4,
 	},
 	LP = {
 		NAME = "LP",
 		ROAM_SPEED = 12,
-		CHASE_SPEED = 23, -- a sprinting player (24) can barely escape
-		SIGHT_RANGE = 60,
-		SIGHT_INTERVAL = 0.3,
-		REPATH_INTERVAL = 0.5,
+		CHASE_SPEED = 18, -- when you've stopped running you can break his sight to escape
+		RULEBREAK_CHASE_SPEED = 25, -- while you keep running he outpaces a sprint
+		SIGHT_RANGE = 70,
+		SIGHT_INTERVAL = 0.25,
 		SPEED_THRESHOLD = 20, -- horizontal velocity above this + line of sight = trouble
-		MEMORY_SECONDS = 4,
+		MEMORY_SECONDS = 6,
 		CATCH_DISTANCE = 4,
 		DETENTION_SECONDS = 15,
 		RELEASE_IMMUNITY_SECONDS = 5, -- can't be re-detained right after release
 	},
 	FROSTY = {
 		NAME = "Frosty",
-		ROAM_SPEED = 8,
-		WAIT_MIN = 1,
-		WAIT_MAX = 2,
-		DEBUFF_RADIUS = 6,
+		ROAM_SPEED = 9,
+		WAIT_MIN = 0.6,
+		WAIT_MAX = 1.4,
+		DEBUFF_RADIUS = 7,
 		DEBUFF_SECONDS = 4,
 		DEBUFF_MULTIPLIER = 0.4, -- WalkSpeed becomes base * 0.4
 		DEBUFF_COOLDOWN = 4, -- per victim

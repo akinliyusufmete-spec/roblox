@@ -152,9 +152,14 @@ function NpcFactory.create(spec, parent)
 
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
+	-- a usable jump lets pathfinding clear small thresholds/lips and lets the
+	-- NPC hop free when it wedges on geometry (see NpcBase:unstickNudge)
 	pcall(function()
-		humanoid.JumpHeight = 0
+		humanoid.UseJumpPower = true
+	end)
+	humanoid.JumpPower = 35
+	pcall(function()
+		humanoid.JumpHeight = 5
 	end)
 	humanoid.MaxHealth = 100000
 	humanoid.Health = humanoid.MaxHealth

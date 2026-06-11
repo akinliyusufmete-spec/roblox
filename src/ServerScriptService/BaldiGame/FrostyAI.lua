@@ -2,13 +2,16 @@
 	FrostyAI (ModuleScript, ServerScriptService.BaldiGame.FrostyAI)
 
 	The passive roamer.
-	  - Picks random waypoints, walks to each, waits 1–2 seconds, repeats.
+	  - Wanders between waypoints, pausing briefly at each, forever. Uses the
+	    shared robust pathfinding, so it follows real routes and recovers if
+	    it wedges instead of grinding into a wall.
 	  - Never chases and needs no line-of-sight checks.
 	  - Heartbeat magnitude check: any player within DEBUFF_RADIUS gets a
-	    SpeedDebuff RemoteEvent (client slows to base * 0.4 for 4 seconds
-	    and shows the frost vignette). Per-player cooldown so it doesn't
-	    re-trigger every frame.
-	  - Optionally chills other NPCs that wander too close (SLOWS_NPCS).
+	    SpeedDebuff RemoteEvent (client slows to base * multiplier for a few
+	    seconds and shows the frost vignette). Per-player cooldown so it
+	    doesn't re-trigger every frame.
+	  - Optionally chills other NPCs that wander too close (SLOWS_NPCS) — use
+	    Frosty to slow down ChatRevive or LP.
 
 	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/Frosty
 	(the glow/transparency styling below applies to the placeholder only)
@@ -44,12 +47,12 @@ function FrostyAI.init(ctx)
 	local playerCooldowns = {} -- [player] = next allowed debuff time
 	local npcCooldowns = {} -- [npcSelf] = next allowed slow time
 
-	-- ---------- main roam loop: waypoint, wait 1-2s, next waypoint ----------
+	-- ---------- main roam loop: waypoint, pause, next waypoint ----------
 
 	task.spawn(function()
 		while true do
-			if not base:isActive() or not (ctx.manager and ctx.manager.isRoundActive()) then
-				task.wait(0.25)
+			if not base:canAct() then
+				task.wait(0.2)
 			else
 				base:roamStep(cfg.ROAM_SPEED, nil)
 				task.wait(rng:NextNumber(cfg.WAIT_MIN, cfg.WAIT_MAX))

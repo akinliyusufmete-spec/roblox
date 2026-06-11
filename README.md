@@ -59,9 +59,9 @@ door turns green → touch it to escape. Your time is tracked; beat your best.
 
 | Character | Archetype | Behaviour |
 |---|---|---|
-| **ChatRevive** | On-sight chaser | Roams; sight check every 0.3s; chases on sight (outrun it only by sprinting); catch = game over + drops a Nickel. **Enrages at 10/10 notebooks.** |
-| **LP** | Condition chaser | Only reacts if he **sees** you moving **faster than 20** (sprint = 24, walk = 16). Caught = **15s detention**, not game over. |
-| **Frosty** | Passive roamer | Never chases. Within 6 studs you're chilled: 0.4× speed for 4s (chills ChatRevive and LP too — use it!). |
+| **ChatRevive** | Relentless hunter | **Knows where you are from anywhere** and continuously re-paths to your live position — round a corner and he follows you in, he doesn't forget. Keep distance only by sprinting (24 vs his 19), stun him (BSODA), chill him (Frosty), or reach the exit. Catch = game over + drops a Nickel. **Enrages at 10/10 notebooks** (speed 23). |
+| **LP** | Rule enforcer | Ignores you until he **sees** you moving **faster than 20** (sprint = 24, walk = 16). Once provoked he chases your live position and **speeds up while you keep running** (25 — faster than a sprint), easing back to 18 when you walk. Escape = stop running *and* break his line of sight. Caught = **15s detention**, not game over. |
+| **Frosty** | Passive roamer | Never chases. Within 7 studs you're chilled: 0.4× speed for 4s (chills ChatRevive and LP too — lead them through him!). |
 
 **Items** (2 slots, slot 1 active): **BSODA** knocks a character back 20 studs
 and stuns 3s. **Zesty Bar** refills stamina instantly. **Nickels** are
@@ -139,8 +139,20 @@ Workspace
   counter as plain outlined text top-left, white item squares top-right —
   and every background/icon/button is an ImageLabel slot fed from
   `AssetConfig`, so your art drops straight in.
+- **NPC movement is built for hand-made maps** (`NpcBase`): chasers
+  continuously re-path to your *live* position so they follow you through
+  doorways instead of stalling at the threshold; a small jump-capable
+  pathfinding agent (radius 2) fits normal doorways and clears small lips;
+  stuck detection + an unstick nudge recover from wedging on geometry rather
+  than grinding into it; and an NPC never blindly straight-lines into a wall.
+  Keep doorways ~5+ studs wide for clean paths. Tune in `GameConfig.NPC.AGENT`.
+- **Animations always show something** (`NpcAnimator`): your `Animations`
+  folder (Idle/Walk/Chase) is used when present, with clear Output warnings if
+  an id is blank or unpublished; otherwise a procedural limb-swing walk drives
+  any standard R6 rig (including the placeholder block characters).
 - **LP checks horizontal velocity, not WalkSpeed** — client WalkSpeed never
-  replicates, so the velocity check is both possible and cheat-proof.
+  replicates, so the velocity check is both possible and cheat-proof, and it
+  doubles as the "are you still breaking the rule?" test that ramps his speed.
 - **Catches use a 4-stud radius check, not `Touched`** — deterministic on
   welded rigs.
 - **Server-authoritative everything**: inventory, nickels, vending, BSODA

@@ -197,37 +197,54 @@ GameConfig.BSODA_PROJECTILE = {
 
 -- ========== NPCs ==========
 GameConfig.NPC = {
+	-- How often a chasing NPC recomputes its path to your live position.
+	-- Lower = tighter tracking (less "goldfish"), slightly more CPU.
+	REPATH_INTERVAL = 0.3,
+
+	-- Pathfinding agent shape, shared by every NPC. A small radius fits
+	-- through hand-made doorways; jumping clears small thresholds/lips and
+	-- lets a wedged NPC hop free. Make doorways at least ~5 studs wide.
+	AGENT = {
+		RADIUS = 2,
+		HEIGHT = 5,
+		JUMP = true,
+		JUMP_HEIGHT = 4,
+	},
+
 	CHATREVIVE = {
 		NAME = "ChatRevive",
-		ROAM_SPEED = 10,
-		CHASE_SPEED = 18.5, -- sprint (24) outruns it, walking (16) does not
-		ENRAGED_CHASE_SPEED = 22, -- after all notebooks are collected
-		ENRAGED_SIGHT_INTERVAL = 0.15,
-		SIGHT_RANGE = 70,
-		SIGHT_INTERVAL = 0.3,
-		REPATH_INTERVAL = 0.5,
-		MEMORY_SECONDS = 3, -- keeps chasing last-known position this long after losing sight
+		-- Knows where the nearest player is from anywhere on the map and
+		-- hunts relentlessly. Set false to require line of sight within
+		-- SIGHT_RANGE instead.
+		OMNISCIENT = true,
+		ROAM_SPEED = 11,
+		CHASE_SPEED = 19, -- sprint (24) outruns it, walking (16) does not
+		ENRAGED_CHASE_SPEED = 23, -- after all notebooks are collected
+		ENRAGED_SIGHT_INTERVAL = 0.12,
+		SIGHT_RANGE = 200, -- only used when OMNISCIENT = false
+		SIGHT_INTERVAL = 0.25, -- how often he re-picks the nearest target
+		MEMORY_SECONDS = 6, -- chases last-known position this long after losing sight
 		CATCH_DISTANCE = 4,
 	},
 	LP = {
 		NAME = "LP",
 		ROAM_SPEED = 12,
-		CHASE_SPEED = 23, -- a sprinting player (24) can barely escape
-		SIGHT_RANGE = 60,
-		SIGHT_INTERVAL = 0.3,
-		REPATH_INTERVAL = 0.5,
+		CHASE_SPEED = 18, -- when you've stopped running you can break his sight to escape
+		RULEBREAK_CHASE_SPEED = 25, -- while you keep running he outpaces a sprint
+		SIGHT_RANGE = 70,
+		SIGHT_INTERVAL = 0.25,
 		SPEED_THRESHOLD = 20, -- horizontal velocity above this + line of sight = trouble
-		MEMORY_SECONDS = 4,
+		MEMORY_SECONDS = 6,
 		CATCH_DISTANCE = 4,
 		DETENTION_SECONDS = 15,
 		RELEASE_IMMUNITY_SECONDS = 5, -- can't be re-detained right after release
 	},
 	FROSTY = {
 		NAME = "Frosty",
-		ROAM_SPEED = 8,
-		WAIT_MIN = 1,
-		WAIT_MAX = 2,
-		DEBUFF_RADIUS = 6,
+		ROAM_SPEED = 9,
+		WAIT_MIN = 0.6,
+		WAIT_MAX = 1.4,
+		DEBUFF_RADIUS = 7,
 		DEBUFF_SECONDS = 4,
 		DEBUFF_MULTIPLIER = 0.4, -- WalkSpeed becomes base * 0.4
 		DEBUFF_COOLDOWN = 4, -- per victim
@@ -459,16 +476,18 @@ return AssetResolver
 --[[
 	ChatReviveAI (ModuleScript, ServerScriptService.BaldiGame.ChatReviveAI)
 
-	The on-sight chaser (the "Baldi" of this game).
-	  - Roams between random waypoints.
-	  - Raycast line-of-sight scan every SIGHT_INTERVAL (0.3s).
-	  - On sight: PathfindingService chase, re-pathing every 0.5s.
-	  - Loses sight: walks to the last known position, then resumes roaming.
-	  - Touch (catch radius): game over for that player; a Nickel is dropped
-	    where they were caught.
+	The relentless chaser (the "Baldi" of this game).
+	  - OMNISCIENT: always knows where the nearest player is and hunts them
+	    from anywhere on the map. Rounding a corner doesn't lose him — your
+	    only escape is to outpace him (sprint), stun him (BSODA), chill him
+	    (Frosty), or reach the exit. (Set OMNISCIENT = false in GameConfig
+	    to fall back to line-of-sight hunting within SIGHT_RANGE.)
+	  - Chases via continuous re-pathing to your LIVE position, so he
+	    follows you into rooms instead of stopping at the doorway.
+	  - Catch (within CATCH_DISTANCE): game over for that player; a Nickel is
+	    dropped where they were caught.
 	  - Enrages when all notebooks are collected: faster, scans more often,
-	    glows red (your rig gets a red Highlight; the placeholder also
-	    recolors).
+	    glows red (your rig gets a red Highlight; the placeholder recolors).
 
 	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/ChatRevive
 	Chase sound: AssetConfig.SOUNDS.chase (else a built-in snap)
@@ -504,7 +523,7 @@ function ChatReviveAI.init(ctx)
 	self.base = base
 	self.model = model
 
-	-- the iconic chase noise, played on every re-path tick
+	-- the iconic chase noise, played while hunting
 	local chaseSoundId = ctx.assets.SOUNDS.chase
 	local slap = Instance.new("Sound")
 	slap.Name = "ChaseSound"
@@ -527,8 +546,14 @@ function ChatReviveAI.init(ctx)
 		return self.enraged and cfg.ENRAGED_CHASE_SPEED or cfg.CHASE_SPEED
 	end
 
-	-- nearest targetable player with clear line of sight (throttled)
-	local function findVisibleTarget()
+	local function targetRoot(player)
+		local character = player and player.Character
+		return character and character:FindFirstChild("HumanoidRootPart") or nil
+	end
+
+	-- nearest targetable player (throttled). When OMNISCIENT, walls and
+	-- distance don't matter — he always picks the closest target.
+	local function findTarget()
 		if os.clock() - lastScan < sightInterval() then
 			return cachedTarget
 		end
@@ -539,11 +564,11 @@ function ChatReviveAI.init(ctx)
 		end
 		local bestDistance = math.huge
 		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
-			local character = player.Character
-			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			local hrp = targetRoot(player)
 			if hrp then
 				local distance = (hrp.Position - base.root.Position).Magnitude
-				if distance < bestDistance and base:canSee(hrp, cfg.SIGHT_RANGE) then
+				local visible = cfg.OMNISCIENT or base:canSee(hrp, cfg.SIGHT_RANGE)
+				if visible and distance < bestDistance then
 					bestDistance = distance
 					cachedTarget = player
 				end
@@ -552,67 +577,62 @@ function ChatReviveAI.init(ctx)
 		return cachedTarget
 	end
 
-	local function targetRoot(player)
-		local character = player and player.Character
-		return character and character:FindFirstChild("HumanoidRootPart") or nil
-	end
-
 	-- ---------- chase ----------
 
 	local function chase(player)
 		local lastSeenAt = os.clock()
-		local hrp = targetRoot(player)
-		if not hrp then
-			return
-		end
-		local lastKnown = hrp.Position
+		local lastKnown = nil
 
-		while base:isActive() do
-			if not ctx.manager.isRoundActive() then
-				return
+		base:pursue(
+			function()
+				-- where to head for this leg, or nil to give up
+				if not ctx.manager.isRoundActive() then
+					return nil
+				end
+				local hrp = targetRoot(player)
+				if not hrp or not ctx.manager.isTargetable(player) then
+					return nil
+				end
+				if cfg.OMNISCIENT or base:canSee(hrp, cfg.SIGHT_RANGE) then
+					lastSeenAt = os.clock()
+					lastKnown = hrp.Position
+					return lastKnown
+				end
+				-- lost sight (only possible when not omniscient): chase the
+				-- last place we saw them, then resume roaming
+				if os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
+					return nil
+				end
+				if lastKnown and (lastKnown - base.root.Position).Magnitude < 4 then
+					return nil -- reached the last-known spot, they're gone
+				end
+				return lastKnown
+			end,
+			chaseSpeed,
+			function()
+				pcall(function()
+					self.slapSound.PlaybackSpeed = self.enraged and 1.3 or 1
+					if not self.slapSound.IsPlaying then
+						self.slapSound:Play()
+					end
+				end)
 			end
-			hrp = targetRoot(player)
-			if not hrp or not ctx.manager.isTargetable(player) then
-				break
-			end
-
-			if base:canSee(hrp, cfg.SIGHT_RANGE) then
-				lastSeenAt = os.clock()
-				lastKnown = hrp.Position
-			elseif os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
-				break
-			end
-
-			base:setMoveSpeed(chaseSpeed())
-			base:chaseStepToward(lastKnown)
-			pcall(function()
-				self.slapSound.PlaybackSpeed = self.enraged and 1.3 or 1
-				self.slapSound:Play()
-			end)
-			task.wait(cfg.REPATH_INTERVAL)
-		end
-
-		-- lost them: check out the last place they were seen
-		if base:isActive() and ctx.manager.isRoundActive() then
-			base:travelTo(lastKnown, chaseSpeed(), function()
-				return findVisibleTarget() ~= nil
-			end)
-		end
+		)
 	end
 
 	-- ---------- main brain loop ----------
 
 	task.spawn(function()
 		while true do
-			if not base:isActive() or not (ctx.manager and ctx.manager.isRoundActive()) then
-				task.wait(0.25)
+			if not base:canAct() then
+				task.wait(0.2)
 			else
-				local target = findVisibleTarget()
+				local target = findTarget()
 				if target then
 					chase(target)
 				else
 					base:roamStep(cfg.ROAM_SPEED, function()
-						return findVisibleTarget() ~= nil
+						return findTarget() ~= nil
 					end)
 				end
 			end
@@ -883,13 +903,16 @@ return ExitDoorManager
 	FrostyAI (ModuleScript, ServerScriptService.BaldiGame.FrostyAI)
 
 	The passive roamer.
-	  - Picks random waypoints, walks to each, waits 1–2 seconds, repeats.
+	  - Wanders between waypoints, pausing briefly at each, forever. Uses the
+	    shared robust pathfinding, so it follows real routes and recovers if
+	    it wedges instead of grinding into a wall.
 	  - Never chases and needs no line-of-sight checks.
 	  - Heartbeat magnitude check: any player within DEBUFF_RADIUS gets a
-	    SpeedDebuff RemoteEvent (client slows to base * 0.4 for 4 seconds
-	    and shows the frost vignette). Per-player cooldown so it doesn't
-	    re-trigger every frame.
-	  - Optionally chills other NPCs that wander too close (SLOWS_NPCS).
+	    SpeedDebuff RemoteEvent (client slows to base * multiplier for a few
+	    seconds and shows the frost vignette). Per-player cooldown so it
+	    doesn't re-trigger every frame.
+	  - Optionally chills other NPCs that wander too close (SLOWS_NPCS) — use
+	    Frosty to slow down ChatRevive or LP.
 
 	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/Frosty
 	(the glow/transparency styling below applies to the placeholder only)
@@ -925,12 +948,12 @@ function FrostyAI.init(ctx)
 	local playerCooldowns = {} -- [player] = next allowed debuff time
 	local npcCooldowns = {} -- [npcSelf] = next allowed slow time
 
-	-- ---------- main roam loop: waypoint, wait 1-2s, next waypoint ----------
+	-- ---------- main roam loop: waypoint, pause, next waypoint ----------
 
 	task.spawn(function()
 		while true do
-			if not base:isActive() or not (ctx.manager and ctx.manager.isRoundActive()) then
-				task.wait(0.25)
+			if not base:canAct() then
+				task.wait(0.2)
 			else
 				base:roamStep(cfg.ROAM_SPEED, nil)
 				task.wait(rng:NextNumber(cfg.WAIT_MIN, cfg.WAIT_MAX))
@@ -1755,9 +1778,15 @@ return ItemEconomy
 
 	The condition-based chaser (the "Principal" role).
 	  - Roams normally and ignores everyone.
-	  - Condition: player is moving faster than SPEED_THRESHOLD *and* LP has
+	  - Condition: a player is moving faster than SPEED_THRESHOLD *and* LP has
 	    line of sight. Only sight = no reaction. Only speed = no reaction.
-	  - Condition met: chases until catch or sight lost for MEMORY_SECONDS.
+	  - Once provoked he chases via continuous re-pathing to your live
+	    position (he follows you through doorways), and only loses interest
+	    after MEMORY_SECONDS out of sight.
+	  - Speeds up while you keep breaking the rule: as long as you're running
+	    he moves at RULEBREAK_CHASE_SPEED (faster than a sprint, so you can't
+	    just outrun him) — slow to a walk and he eases back to CHASE_SPEED, so
+	    the smart escape is to stop running and break his line of sight.
 	  - On catch: hands the player to DetentionSystem (teleport + lock).
 
 	Server-side speed check: a client-side WalkSpeed change does NOT
@@ -1815,6 +1844,10 @@ function LpAI.init(ctx)
 		return Vector3.new(velocity.X, 0, velocity.Z).Magnitude
 	end
 
+	local function isBreakingRule(hrp)
+		return hrp ~= nil and horizontalSpeed(hrp) > cfg.SPEED_THRESHOLD
+	end
+
 	local lastScan = 0
 	local cachedOffender = nil
 
@@ -1832,7 +1865,7 @@ function LpAI.init(ctx)
 		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
 			if not ctx.detention.hasImmunity(player) then
 				local hrp = targetRoot(player)
-				if hrp and horizontalSpeed(hrp) > cfg.SPEED_THRESHOLD then
+				if isBreakingRule(hrp) then
 					local distance = (hrp.Position - base.root.Position).Magnitude
 					if distance < bestDistance and base:canSee(hrp, cfg.SIGHT_RANGE) then
 						bestDistance = distance
@@ -1848,51 +1881,51 @@ function LpAI.init(ctx)
 
 	local function chase(player)
 		local lastSeenAt = os.clock()
-		local hrp = targetRoot(player)
-		if not hrp then
-			return
-		end
-		local lastKnown = hrp.Position
+		local lastKnown = nil
 		pcall(function()
 			whistle:Play()
 		end)
 
-		while base:isActive() do
-			if not ctx.manager.isRoundActive() then
-				return
+		base:pursue(
+			function()
+				if not ctx.manager.isRoundActive() then
+					return nil
+				end
+				local hrp = targetRoot(player)
+				if not hrp or not ctx.manager.isTargetable(player) or ctx.detention.isDetained(player) then
+					return nil
+				end
+				-- once agitated, LP keeps coming whether or not you slow down;
+				-- only losing line of sight for MEMORY_SECONDS calms him
+				if base:canSee(hrp, cfg.SIGHT_RANGE) then
+					lastSeenAt = os.clock()
+					lastKnown = hrp.Position
+					return lastKnown
+				end
+				if os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
+					return nil
+				end
+				if lastKnown and (lastKnown - base.root.Position).Magnitude < 4 then
+					return nil
+				end
+				return lastKnown
+			end,
+			function()
+				-- faster while the target is actively breaking the speed rule
+				if isBreakingRule(targetRoot(player)) then
+					return cfg.RULEBREAK_CHASE_SPEED
+				end
+				return cfg.CHASE_SPEED
 			end
-			hrp = targetRoot(player)
-			if not hrp or not ctx.manager.isTargetable(player) or ctx.detention.isDetained(player) then
-				break
-			end
-
-			-- once agitated, LP keeps coming whether or not you slow down;
-			-- only losing line of sight for MEMORY_SECONDS calms him
-			if base:canSee(hrp, cfg.SIGHT_RANGE) then
-				lastSeenAt = os.clock()
-				lastKnown = hrp.Position
-			elseif os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
-				break
-			end
-
-			base:setMoveSpeed(cfg.CHASE_SPEED)
-			base:chaseStepToward(lastKnown)
-			task.wait(cfg.REPATH_INTERVAL)
-		end
-
-		if base:isActive() and ctx.manager.isRoundActive() then
-			base:travelTo(lastKnown, cfg.CHASE_SPEED, function()
-				return findOffender() ~= nil
-			end)
-		end
+		)
 	end
 
 	-- ---------- main brain loop ----------
 
 	task.spawn(function()
 		while true do
-			if not base:isActive() or not (ctx.manager and ctx.manager.isRoundActive()) then
-				task.wait(0.25)
+			if not base:canAct() then
+				task.wait(0.2)
 			else
 				local offender = findOffender()
 				if offender then
@@ -2343,34 +2376,35 @@ return NotebookSpawner
 --[[
 	NpcAnimator (ModuleScript, ServerScriptService.BaldiGame.NpcAnimator)
 
-	Plays YOUR animations on an NPC rig. Put a Folder named "Animations"
-	inside the rig (ReplicatedStorage/BaldiAssets/Npcs/<Name>/Animations)
-	containing Animation instances named:
+	Animates an NPC rig. Two layers, picked automatically:
 
-	  Idle   — played while standing still
-	  Walk   — played while roaming
-	  Chase  — played while moving faster than the chase threshold
-	           (optional; falls back to Walk)
+	1. YOUR animations. Put a Folder named "Animations" inside the rig
+	   (ReplicatedStorage/BaldiAssets/Npcs/<Name>/Animations) holding
+	   Animation instances named:
+	     Idle   — standing still
+	     Walk   — roaming
+	     Chase  — moving faster than the chase threshold (optional -> Walk)
+	   Tracks loop and crossfade. If an id is blank or fails to load you get
+	   a clear warning in the Output window naming the exact animation.
 
-	All are optional — a rig with no Animations folder simply doesn't
-	animate (the placeholder rigs work this way). Tracks loop and
-	crossfade. Server-side playback replicates to every client.
+	2. Procedural walk fallback. If the rig has no usable Animations folder
+	   but DOES have standard R6 joints (the code-built placeholder, or any
+	   R6 rig), the limbs are swung in code so the character visibly walks.
+	   This is why the placeholder block characters animate out of the box.
+
+	A rig with neither (a custom mesh with no Animations folder) simply
+	stays in its rest pose — add an Animations folder to fix that.
 ]]
 
 local NpcAnimator = {}
 
-local POLL_INTERVAL = 0.15
+local POLL_INTERVAL = 0.12
 local MOVING_THRESHOLD = 0.5 -- studs/sec; below this counts as standing
 
--- chaseThreshold: WalkSpeed above which "Chase" plays instead of "Walk".
--- Pass math.huge for characters that never chase (e.g. Frosty).
-function NpcAnimator.attach(model, chaseThreshold)
+-- ===================== your animations =====================
+
+local function attachTrackAnimator(model, humanoid, folder, chaseThreshold)
 	chaseThreshold = chaseThreshold or math.huge
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
-	local folder = model:FindFirstChild("Animations")
-	if not humanoid or not folder then
-		return nil
-	end
 
 	local animator = humanoid:FindFirstChildOfClass("Animator")
 	if not animator then
@@ -2379,24 +2413,46 @@ function NpcAnimator.attach(model, chaseThreshold)
 	end
 
 	local tracks = {}
+	local loaded = 0
 	for _, name in ipairs({ "Idle", "Walk", "Chase" }) do
 		local animation = folder:FindFirstChild(name)
-		if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then
-			local ok, track = pcall(function()
-				return animator:LoadAnimation(animation)
-			end)
-			if ok and track then
-				track.Looped = true
-				track.Priority = Enum.AnimationPriority.Movement
-				tracks[name] = track
+		if animation and animation:IsA("Animation") then
+			if animation.AnimationId == "" then
+				warn(string.format(
+					"[BaldiGame] %s/Animations/%s has a blank AnimationId — publish the animation and paste its id.",
+					model.Name, name))
 			else
-				warn(string.format("[BaldiGame] Could not load animation %s/%s", model.Name, name))
+				-- a freshly cloned rig can need a couple of tries before the
+				-- Animator accepts a LoadAnimation, so retry briefly
+				local track
+				for _ = 1, 3 do
+					local ok, loadedTrack = pcall(function()
+						return animator:LoadAnimation(animation)
+					end)
+					if ok and loadedTrack then
+						track = loadedTrack
+						break
+					end
+					task.wait(0.1)
+				end
+				if track then
+					track.Looped = true
+					track.Priority = Enum.AnimationPriority.Movement
+					tracks[name] = track
+					loaded = loaded + 1
+				else
+					warn(string.format(
+						"[BaldiGame] %s/Animations/%s failed to load — is the id published to this game's owner (user or group)?",
+						model.Name, name))
+				end
 			end
 		end
 	end
-	if next(tracks) == nil then
+
+	if loaded == 0 then
 		return nil
 	end
+	print(string.format("[BaldiGame] %s: loaded %d custom animation(s).", model.Name, loaded))
 
 	local self = { running = true, current = nil }
 
@@ -2404,6 +2460,9 @@ function NpcAnimator.attach(model, chaseThreshold)
 		local track = tracks[name]
 		if name == "Chase" and not track then
 			track = tracks.Walk
+		end
+		if not track and name == "Idle" then
+			track = tracks.Walk -- a rig with only a Walk loop still moves
 		end
 		if track == self.current then
 			return
@@ -2446,6 +2505,90 @@ function NpcAnimator.attach(model, chaseThreshold)
 	return self
 end
 
+-- ===================== procedural walk fallback =====================
+
+-- Standard R6 limb joints and which way each should swing.
+local SWING_JOINTS = {
+	["Left Hip"] = 1,
+	["Right Hip"] = -1,
+	["Left Shoulder"] = -1,
+	["Right Shoulder"] = 1,
+}
+
+local function attachProceduralWalk(model, humanoid)
+	local joints = {}
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("Motor6D") and SWING_JOINTS[descendant.Name] then
+			table.insert(joints, {
+				motor = descendant,
+				base = descendant.C0,
+				sign = SWING_JOINTS[descendant.Name],
+			})
+		end
+	end
+	if #joints == 0 then
+		return nil
+	end
+
+	local self = { running = true }
+	task.spawn(function()
+		local phase = 0
+		while self.running and model.Parent do
+			local dt = task.wait()
+			local root = model.PrimaryPart
+			local speed = 0
+			if root then
+				local velocity = root.AssemblyLinearVelocity
+				speed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+			end
+			if speed > MOVING_THRESHOLD then
+				-- step cadence scales with how fast the NPC is moving
+				phase = phase + dt * (4 + math.clamp(speed, 0, 24) * 0.5)
+				local swing = math.sin(phase) * math.rad(38)
+				for _, joint in ipairs(joints) do
+					joint.motor.C0 = joint.base * CFrame.Angles(swing * joint.sign, 0, 0)
+				end
+			else
+				-- ease the limbs back to a neutral stand
+				for _, joint in ipairs(joints) do
+					joint.motor.C0 = joint.motor.C0:Lerp(joint.base, 0.2)
+				end
+			end
+		end
+	end)
+
+	function self.destroy()
+		self.running = false
+		for _, joint in ipairs(joints) do
+			joint.motor.C0 = joint.base
+		end
+	end
+
+	return self
+end
+
+-- ===================== entry point =====================
+
+-- chaseThreshold: WalkSpeed above which "Chase" plays instead of "Walk".
+-- Pass math.huge / nil for characters that never chase (e.g. Frosty).
+function NpcAnimator.attach(model, chaseThreshold)
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return nil
+	end
+
+	local folder = model:FindFirstChild("Animations")
+	if folder then
+		local tracked = attachTrackAnimator(model, humanoid, folder, chaseThreshold)
+		if tracked then
+			return tracked
+		end
+		-- folder present but nothing usable loaded: still try to move limbs
+	end
+
+	return attachProceduralWalk(model, humanoid)
+end
+
 return NpcAnimator
 ]=====],
 	},
@@ -2458,14 +2601,26 @@ return NpcAnimator
 --[[
 	NpcBase (ModuleScript, ServerScriptService.BaldiGame.NpcBase)
 
-	Shared behaviour for all three characters: pathfinding locomotion,
-	roaming between waypoints, line-of-sight raycasts, stun/knockback
-	(BSODA) and slow (Frosty) effects, animation hookup, and reset
-	between rounds.
+	Shared locomotion for all three characters: robust pathfinding,
+	roaming, continuous pursuit of a moving target, line-of-sight
+	raycasts, stun/knockback (BSODA), slow (Frosty), animation hookup,
+	and reset between rounds.
 
-	The three AIs only differ in WHAT triggers a new path and WHAT the
-	target is — that difference lives in ChatReviveAI / LpAI / FrostyAI;
-	everything mechanical lives here.
+	The three AIs only differ in WHAT triggers a chase and WHERE the goal
+	is — that lives in ChatReviveAI / LpAI / FrostyAI. Everything
+	mechanical (how to actually get somewhere without wedging on a wall or
+	a doorway) lives here.
+
+	Movement is built to be reliable on a hand-made map:
+	  - paths are recomputed continuously while chasing, aimed at the
+	    target's LIVE position, so an NPC follows you into a room instead
+	    of stopping at the door,
+	  - a small agent radius fits through normal doorways,
+	  - jump-capable agents clear small thresholds/lips,
+	  - stuck detection + an unstick nudge recover from wedging on
+	    geometry instead of grinding into it forever,
+	  - we never blindly straight-line into a wall: if no path exists we
+	    probe briefly and give up rather than push against geometry.
 ]]
 
 local PathfindingService = game:GetService("PathfindingService")
@@ -2474,6 +2629,12 @@ local NpcAnimator = require(script.Parent.NpcAnimator)
 
 local NpcBase = {}
 NpcBase.__index = NpcBase
+
+-- locomotion tuning
+local STEP_POLL = 0.08 -- how often a single MoveTo leg samples progress
+local STUCK_PROGRESS = 2 -- studs we must gain to count as "still moving"
+local STUCK_GRACE = 0.55 -- seconds of no progress before we call it stuck
+local ARRIVE_RADIUS = 4 -- "close enough" when picking the next path waypoint
 
 -- chaseAnimThreshold: WalkSpeed above which the rig's "Chase" animation
 -- plays (omit for characters that never chase).
@@ -2492,8 +2653,19 @@ function NpcBase.new(ctx, model, spawnCFrame, chaseAnimThreshold)
 	self.desiredSpeed = 0
 	self.rng = Random.new()
 
-	-- plays the Animations folder inside your rig, if present
+	-- plays the Animations folder inside your rig, or a procedural walk
 	self.animator = NpcAnimator.attach(model, chaseAnimThreshold)
+
+	-- shared agent params: a tighter radius fits hand-made doorways, and
+	-- jumping lets the NPC clear small lips/thresholds and unstick itself.
+	local agent = ctx.config.NPC.AGENT or {}
+	self.agentParams = {
+		AgentRadius = agent.RADIUS or 2,
+		AgentHeight = agent.HEIGHT or 5,
+		AgentCanJump = agent.JUMP ~= false,
+		AgentJumpHeight = agent.JUMP_HEIGHT or 4,
+		WaypointSpacing = 4,
+	}
 
 	-- raycast params for sight checks: ignore everything that isn't level
 	-- geometry or the player being checked
@@ -2527,6 +2699,12 @@ end
 
 function NpcBase:isActive()
 	return (not self.paused) and (not self:isStunned()) and self.model.Parent ~= nil
+end
+
+-- True only while a round is running AND this NPC may move.
+function NpcBase:canAct()
+	local manager = self.ctx.manager
+	return self:isActive() and manager ~= nil and manager.isRoundActive()
 end
 
 function NpcBase:setPaused(paused)
@@ -2642,14 +2820,10 @@ function NpcBase:canSee(targetRoot, maxDistance)
 	return result.Instance:IsDescendantOf(targetRoot.Parent)
 end
 
--- ===================== pathfinding =====================
+-- ===================== pathfinding core =====================
 
 function NpcBase:computePath(targetPosition)
-	local path = PathfindingService:CreatePath({
-		AgentRadius = 2.5,
-		AgentHeight = 6,
-		AgentCanJump = false,
-	})
+	local path = PathfindingService:CreatePath(self.agentParams)
 	local ok = pcall(function()
 		path:ComputeAsync(self.root.Position, targetPosition)
 	end)
@@ -2659,88 +2833,222 @@ function NpcBase:computePath(targetPosition)
 	return nil
 end
 
--- MoveTo a single point and wait until arrival / timeout / abort.
-function NpcBase:waitMoveTo(position, timeout, abortCheck)
-	if self.humanoid.Health <= 0 then
-		return false
+-- Back out of a wedge: shove away from whatever we're pressed against,
+-- hop, and turn, so the next path compute starts from open floor.
+function NpcBase:unstickNudge()
+	local back = -self.root.CFrame.LookVector
+	local sideSign = (self.rng:NextNumber() > 0.5) and 1 or -1
+	local side = self.root.CFrame.RightVector * sideSign
+	local escape = (back + side)
+	if escape.Magnitude > 0.01 then
+		escape = escape.Unit
+		self.humanoid:MoveTo(self.root.Position + escape * 5)
 	end
-	local finished = false
-	local reached = false
-	local conn = self.humanoid.MoveToFinished:Connect(function(ok)
+	if self.agentParams.AgentCanJump then
+		self.humanoid.Jump = true
+	end
+	task.wait(0.3)
+end
+
+-- Move toward a single point. Returns one of:
+--   "reached"    arrived
+--   "stuck"      no progress for STUCK_GRACE seconds (caller should recompute)
+--   "abort"      abortCheck() asked us to stop
+--   "interrupted" paused/stunned mid-leg
+--   "timeout"    maxDuration elapsed while still moving (caller repaths)
+--   "blocked"    humanoid gave up on this point
+-- maxDuration caps how long we commit to one leg (chasing repaths often);
+-- omit it for roam legs that should run to completion.
+function NpcBase:stepTo(position, abortCheck, maxDuration)
+	local humanoid = self.humanoid
+	local root = self.root
+	if humanoid.Health <= 0 then
+		return "interrupted"
+	end
+
+	local finished, reached = false, false
+	local conn = humanoid.MoveToFinished:Connect(function(ok)
 		finished = true
 		reached = ok
 	end)
-	self.humanoid:MoveTo(position)
-	local started = os.clock()
-	while not finished do
-		if os.clock() - started > timeout then
+	humanoid:MoveTo(position)
+
+	local startTime = os.clock()
+	local distance = (position - root.Position).Magnitude
+	local walkTimeout = distance / math.max(humanoid.WalkSpeed, 1) + 1.5
+	local lastProgressPos = root.Position
+	local lastProgressTime = startTime
+	local result
+
+	while true do
+		if finished then
+			result = reached and "reached" or "blocked"
 			break
 		end
 		if self.paused or self:isStunned() then
+			result = "interrupted"
 			break
 		end
 		if abortCheck and abortCheck() then
+			result = "abort"
 			break
 		end
-		task.wait(0.05)
+		local now = os.clock()
+		if maxDuration and now - startTime > maxDuration then
+			result = "timeout"
+			break
+		end
+		if now - startTime > walkTimeout then
+			result = "stuck"
+			break
+		end
+		local moved = (root.Position - lastProgressPos).Magnitude
+		if moved > STUCK_PROGRESS then
+			lastProgressPos = root.Position
+			lastProgressTime = now
+		elseif now - lastProgressTime > STUCK_GRACE then
+			result = "stuck"
+			break
+		end
+		task.wait(STEP_POLL)
 	end
+
 	conn:Disconnect()
-	return finished and reached
+	return result
 end
 
--- Full path-follow to a target position. Returns true if it got there.
--- abortCheck() returning true bails out early (e.g. "I spotted a player").
-function NpcBase:travelTo(targetPosition, speed, abortCheck)
+-- ===================== roaming (fixed destination) =====================
+
+-- Walk a full path to a fixed point, recomputing if we wedge. Returns true
+-- only if we actually arrived. abortCheck() bailing returns false early.
+function NpcBase:navigateTo(targetPosition, speed, abortCheck)
 	self:setMoveSpeed(speed)
-	local waypoints = self:computePath(targetPosition)
-	if not waypoints then
-		-- navmesh not ready or target unreachable: straight-line fallback
-		return self:waitMoveTo(targetPosition, 4, abortCheck)
-	end
-	for index = 2, #waypoints do
-		local waypoint = waypoints[index]
-		local distance = (waypoint.Position - self.root.Position).Magnitude
-		local timeout = distance / math.max(self.humanoid.WalkSpeed, 1) + 1.5
-		local ok = self:waitMoveTo(waypoint.Position, timeout, abortCheck)
-		if self.paused or self:isStunned() then
-			return false
-		end
+	for _ = 1, 3 do
 		if abortCheck and abortCheck() then
 			return false
 		end
-		if not ok then
-			return false
+		local waypoints = self:computePath(targetPosition)
+		if not waypoints then
+			-- no route: probe briefly toward it, but never grind on a wall
+			local status = self:stepTo(targetPosition, abortCheck, 0.6)
+			if status == "stuck" or status == "blocked" or status == "timeout" then
+				return false
+			end
+			return status == "reached"
 		end
-	end
-	return true
-end
-
--- One roam leg: pick a random waypoint part and walk to it.
-function NpcBase:roamStep(speed, abortCheck)
-	local nodes = self.ctx.map.waypointsFolder:GetChildren()
-	if #nodes == 0 then
-		task.wait(1)
-		return
-	end
-	local node = nodes[self.rng:NextInteger(1, #nodes)]
-	self:travelTo(node.Position, speed, abortCheck)
-end
-
--- During a chase we re-path every REPATH_INTERVAL instead of walking the
--- whole path; aim for the first waypoint a few studs ahead so motion stays
--- smooth at chase speed.
-function NpcBase:chaseStepToward(goalPosition)
-	local waypoints = self:computePath(goalPosition)
-	local stepTarget = goalPosition
-	if waypoints then
+		local wedged = false
 		for index = 2, #waypoints do
-			if (waypoints[index].Position - self.root.Position).Magnitude > 5 then
-				stepTarget = waypoints[index].Position
+			local waypoint = waypoints[index]
+			if waypoint.Action == Enum.PathWaypointAction.Jump then
+				self.humanoid.Jump = true
+			end
+			local status = self:stepTo(waypoint.Position, abortCheck)
+			if status == "abort" or status == "interrupted" then
+				return false
+			elseif status == "stuck" or status == "blocked" then
+				wedged = true
 				break
 			end
 		end
+		if not wedged then
+			return true
+		end
+		self:unstickNudge()
 	end
-	self.humanoid:MoveTo(stepTarget)
+	return false
+end
+
+-- One roam leg: walk to a random waypoint part. With no waypoints, wander
+-- to a random nearby point we can actually reach (never into a wall).
+function NpcBase:roamStep(speed, abortCheck)
+	local parts = {}
+	for _, node in ipairs(self.ctx.map.waypointsFolder:GetChildren()) do
+		if node:IsA("BasePart") then
+			table.insert(parts, node)
+		end
+	end
+	if #parts == 0 then
+		self:wanderStep(speed, abortCheck)
+		return
+	end
+	-- prefer a waypoint that isn't the one we're already standing on
+	local node = parts[self.rng:NextInteger(1, #parts)]
+	if #parts > 1 and (node.Position - self.root.Position).Magnitude < ARRIVE_RADIUS then
+		node = parts[self.rng:NextInteger(1, #parts)]
+	end
+	self:navigateTo(node.Position, speed, abortCheck)
+end
+
+-- Fallback roam when the map has no Waypoints folder: try a few random
+-- nearby offsets and walk to the first one a path actually exists to.
+function NpcBase:wanderStep(speed, abortCheck)
+	for _ = 1, 6 do
+		if abortCheck and abortCheck() then
+			return
+		end
+		local angle = self.rng:NextNumber(0, math.pi * 2)
+		local dist = self.rng:NextNumber(12, 28)
+		local candidate = self.root.Position + Vector3.new(math.cos(angle) * dist, 0, math.sin(angle) * dist)
+		if self:computePath(candidate) then
+			self:navigateTo(candidate, speed, abortCheck)
+			return
+		end
+	end
+	task.wait(0.3)
+end
+
+-- ===================== pursuit (moving target) =====================
+
+-- One pursuit leg toward a live goal position. Repaths every call, walks
+-- only the next meaningful waypoint, and recovers if it wedges — so the
+-- chase tracks a moving player tightly instead of committing to a stale
+-- path. repathInterval caps how long we commit before recomputing.
+function NpcBase:pursueStep(goalPosition, speed, repathInterval)
+	self:setMoveSpeed(speed)
+	local waypoints = self:computePath(goalPosition)
+	if not waypoints or #waypoints < 2 then
+		-- no route right now: probe straight at the goal, but bail on a wall
+		local status = self:stepTo(goalPosition, nil, repathInterval)
+		if status == "stuck" or status == "blocked" then
+			self:unstickNudge()
+		end
+		return
+	end
+	local target = goalPosition
+	local jump = false
+	for index = 2, #waypoints do
+		if (waypoints[index].Position - self.root.Position).Magnitude > ARRIVE_RADIUS then
+			target = waypoints[index].Position
+			jump = waypoints[index].Action == Enum.PathWaypointAction.Jump
+			break
+		end
+	end
+	if jump then
+		self.humanoid.Jump = true
+	end
+	local status = self:stepTo(target, nil, repathInterval)
+	if status == "stuck" or status == "blocked" then
+		self:unstickNudge()
+	end
+end
+
+-- Continuously chase a moving target. getGoal() returns the Vector3 to head
+-- for right now (the target's live position, or a remembered spot), or nil
+-- to stop chasing. getSpeed() returns the current chase speed. onTick() runs
+-- once per leg (e.g. the chase noise). The caller's getGoal decides memory
+-- and give-up logic; this just drives the legs and recovers from wedging.
+function NpcBase:pursue(getGoal, getSpeed, onTick)
+	local repathInterval = self.ctx.config.NPC.REPATH_INTERVAL or 0.35
+	while self:canAct() do
+		local goal = getGoal()
+		if not goal then
+			return
+		end
+		if onTick then
+			onTick()
+		end
+		self:pursueStep(goal, getSpeed(), repathInterval)
+	end
 end
 
 return NpcBase
@@ -2906,9 +3214,14 @@ function NpcFactory.create(spec, parent)
 
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
+	-- a usable jump lets pathfinding clear small thresholds/lips and lets the
+	-- NPC hop free when it wedges on geometry (see NpcBase:unstickNudge)
 	pcall(function()
-		humanoid.JumpHeight = 0
+		humanoid.UseJumpPower = true
+	end)
+	humanoid.JumpPower = 35
+	pcall(function()
+		humanoid.JumpHeight = 5
 	end)
 	humanoid.MaxHealth = 100000
 	humanoid.Health = humanoid.MaxHealth

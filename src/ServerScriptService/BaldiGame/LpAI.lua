@@ -3,9 +3,15 @@
 
 	The condition-based chaser (the "Principal" role).
 	  - Roams normally and ignores everyone.
-	  - Condition: player is moving faster than SPEED_THRESHOLD *and* LP has
+	  - Condition: a player is moving faster than SPEED_THRESHOLD *and* LP has
 	    line of sight. Only sight = no reaction. Only speed = no reaction.
-	  - Condition met: chases until catch or sight lost for MEMORY_SECONDS.
+	  - Once provoked he chases via continuous re-pathing to your live
+	    position (he follows you through doorways), and only loses interest
+	    after MEMORY_SECONDS out of sight.
+	  - Speeds up while you keep breaking the rule: as long as you're running
+	    he moves at RULEBREAK_CHASE_SPEED (faster than a sprint, so you can't
+	    just outrun him) — slow to a walk and he eases back to CHASE_SPEED, so
+	    the smart escape is to stop running and break his line of sight.
 	  - On catch: hands the player to DetentionSystem (teleport + lock).
 
 	Server-side speed check: a client-side WalkSpeed change does NOT
@@ -63,6 +69,10 @@ function LpAI.init(ctx)
 		return Vector3.new(velocity.X, 0, velocity.Z).Magnitude
 	end
 
+	local function isBreakingRule(hrp)
+		return hrp ~= nil and horizontalSpeed(hrp) > cfg.SPEED_THRESHOLD
+	end
+
 	local lastScan = 0
 	local cachedOffender = nil
 
@@ -80,7 +90,7 @@ function LpAI.init(ctx)
 		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
 			if not ctx.detention.hasImmunity(player) then
 				local hrp = targetRoot(player)
-				if hrp and horizontalSpeed(hrp) > cfg.SPEED_THRESHOLD then
+				if isBreakingRule(hrp) then
 					local distance = (hrp.Position - base.root.Position).Magnitude
 					if distance < bestDistance and base:canSee(hrp, cfg.SIGHT_RANGE) then
 						bestDistance = distance
@@ -96,51 +106,51 @@ function LpAI.init(ctx)
 
 	local function chase(player)
 		local lastSeenAt = os.clock()
-		local hrp = targetRoot(player)
-		if not hrp then
-			return
-		end
-		local lastKnown = hrp.Position
+		local lastKnown = nil
 		pcall(function()
 			whistle:Play()
 		end)
 
-		while base:isActive() do
-			if not ctx.manager.isRoundActive() then
-				return
+		base:pursue(
+			function()
+				if not ctx.manager.isRoundActive() then
+					return nil
+				end
+				local hrp = targetRoot(player)
+				if not hrp or not ctx.manager.isTargetable(player) or ctx.detention.isDetained(player) then
+					return nil
+				end
+				-- once agitated, LP keeps coming whether or not you slow down;
+				-- only losing line of sight for MEMORY_SECONDS calms him
+				if base:canSee(hrp, cfg.SIGHT_RANGE) then
+					lastSeenAt = os.clock()
+					lastKnown = hrp.Position
+					return lastKnown
+				end
+				if os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
+					return nil
+				end
+				if lastKnown and (lastKnown - base.root.Position).Magnitude < 4 then
+					return nil
+				end
+				return lastKnown
+			end,
+			function()
+				-- faster while the target is actively breaking the speed rule
+				if isBreakingRule(targetRoot(player)) then
+					return cfg.RULEBREAK_CHASE_SPEED
+				end
+				return cfg.CHASE_SPEED
 			end
-			hrp = targetRoot(player)
-			if not hrp or not ctx.manager.isTargetable(player) or ctx.detention.isDetained(player) then
-				break
-			end
-
-			-- once agitated, LP keeps coming whether or not you slow down;
-			-- only losing line of sight for MEMORY_SECONDS calms him
-			if base:canSee(hrp, cfg.SIGHT_RANGE) then
-				lastSeenAt = os.clock()
-				lastKnown = hrp.Position
-			elseif os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
-				break
-			end
-
-			base:setMoveSpeed(cfg.CHASE_SPEED)
-			base:chaseStepToward(lastKnown)
-			task.wait(cfg.REPATH_INTERVAL)
-		end
-
-		if base:isActive() and ctx.manager.isRoundActive() then
-			base:travelTo(lastKnown, cfg.CHASE_SPEED, function()
-				return findOffender() ~= nil
-			end)
-		end
+		)
 	end
 
 	-- ---------- main brain loop ----------
 
 	task.spawn(function()
 		while true do
-			if not base:isActive() or not (ctx.manager and ctx.manager.isRoundActive()) then
-				task.wait(0.25)
+			if not base:canAct() then
+				task.wait(0.2)
 			else
 				local offender = findOffender()
 				if offender then

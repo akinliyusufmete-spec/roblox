@@ -1,16 +1,18 @@
 --[[
 	ChatReviveAI (ModuleScript, ServerScriptService.BaldiGame.ChatReviveAI)
 
-	The on-sight chaser (the "Baldi" of this game).
-	  - Roams between random waypoints.
-	  - Raycast line-of-sight scan every SIGHT_INTERVAL (0.3s).
-	  - On sight: PathfindingService chase, re-pathing every 0.5s.
-	  - Loses sight: walks to the last known position, then resumes roaming.
-	  - Touch (catch radius): game over for that player; a Nickel is dropped
-	    where they were caught.
+	The relentless chaser (the "Baldi" of this game).
+	  - OMNISCIENT: always knows where the nearest player is and hunts them
+	    from anywhere on the map. Rounding a corner doesn't lose him — your
+	    only escape is to outpace him (sprint), stun him (BSODA), chill him
+	    (Frosty), or reach the exit. (Set OMNISCIENT = false in GameConfig
+	    to fall back to line-of-sight hunting within SIGHT_RANGE.)
+	  - Chases via continuous re-pathing to your LIVE position, so he
+	    follows you into rooms instead of stopping at the doorway.
+	  - Catch (within CATCH_DISTANCE): game over for that player; a Nickel is
+	    dropped where they were caught.
 	  - Enrages when all notebooks are collected: faster, scans more often,
-	    glows red (your rig gets a red Highlight; the placeholder also
-	    recolors).
+	    glows red (your rig gets a red Highlight; the placeholder recolors).
 
 	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/ChatRevive
 	Chase sound: AssetConfig.SOUNDS.chase (else a built-in snap)
@@ -46,7 +48,7 @@ function ChatReviveAI.init(ctx)
 	self.base = base
 	self.model = model
 
-	-- the iconic chase noise, played on every re-path tick
+	-- the iconic chase noise, played while hunting
 	local chaseSoundId = ctx.assets.SOUNDS.chase
 	local slap = Instance.new("Sound")
 	slap.Name = "ChaseSound"
@@ -69,8 +71,14 @@ function ChatReviveAI.init(ctx)
 		return self.enraged and cfg.ENRAGED_CHASE_SPEED or cfg.CHASE_SPEED
 	end
 
-	-- nearest targetable player with clear line of sight (throttled)
-	local function findVisibleTarget()
+	local function targetRoot(player)
+		local character = player and player.Character
+		return character and character:FindFirstChild("HumanoidRootPart") or nil
+	end
+
+	-- nearest targetable player (throttled). When OMNISCIENT, walls and
+	-- distance don't matter — he always picks the closest target.
+	local function findTarget()
 		if os.clock() - lastScan < sightInterval() then
 			return cachedTarget
 		end
@@ -81,11 +89,11 @@ function ChatReviveAI.init(ctx)
 		end
 		local bestDistance = math.huge
 		for _, player in ipairs(ctx.manager.getTargetablePlayers()) do
-			local character = player.Character
-			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			local hrp = targetRoot(player)
 			if hrp then
 				local distance = (hrp.Position - base.root.Position).Magnitude
-				if distance < bestDistance and base:canSee(hrp, cfg.SIGHT_RANGE) then
+				local visible = cfg.OMNISCIENT or base:canSee(hrp, cfg.SIGHT_RANGE)
+				if visible and distance < bestDistance then
 					bestDistance = distance
 					cachedTarget = player
 				end
@@ -94,67 +102,62 @@ function ChatReviveAI.init(ctx)
 		return cachedTarget
 	end
 
-	local function targetRoot(player)
-		local character = player and player.Character
-		return character and character:FindFirstChild("HumanoidRootPart") or nil
-	end
-
 	-- ---------- chase ----------
 
 	local function chase(player)
 		local lastSeenAt = os.clock()
-		local hrp = targetRoot(player)
-		if not hrp then
-			return
-		end
-		local lastKnown = hrp.Position
+		local lastKnown = nil
 
-		while base:isActive() do
-			if not ctx.manager.isRoundActive() then
-				return
+		base:pursue(
+			function()
+				-- where to head for this leg, or nil to give up
+				if not ctx.manager.isRoundActive() then
+					return nil
+				end
+				local hrp = targetRoot(player)
+				if not hrp or not ctx.manager.isTargetable(player) then
+					return nil
+				end
+				if cfg.OMNISCIENT or base:canSee(hrp, cfg.SIGHT_RANGE) then
+					lastSeenAt = os.clock()
+					lastKnown = hrp.Position
+					return lastKnown
+				end
+				-- lost sight (only possible when not omniscient): chase the
+				-- last place we saw them, then resume roaming
+				if os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
+					return nil
+				end
+				if lastKnown and (lastKnown - base.root.Position).Magnitude < 4 then
+					return nil -- reached the last-known spot, they're gone
+				end
+				return lastKnown
+			end,
+			chaseSpeed,
+			function()
+				pcall(function()
+					self.slapSound.PlaybackSpeed = self.enraged and 1.3 or 1
+					if not self.slapSound.IsPlaying then
+						self.slapSound:Play()
+					end
+				end)
 			end
-			hrp = targetRoot(player)
-			if not hrp or not ctx.manager.isTargetable(player) then
-				break
-			end
-
-			if base:canSee(hrp, cfg.SIGHT_RANGE) then
-				lastSeenAt = os.clock()
-				lastKnown = hrp.Position
-			elseif os.clock() - lastSeenAt > cfg.MEMORY_SECONDS then
-				break
-			end
-
-			base:setMoveSpeed(chaseSpeed())
-			base:chaseStepToward(lastKnown)
-			pcall(function()
-				self.slapSound.PlaybackSpeed = self.enraged and 1.3 or 1
-				self.slapSound:Play()
-			end)
-			task.wait(cfg.REPATH_INTERVAL)
-		end
-
-		-- lost them: check out the last place they were seen
-		if base:isActive() and ctx.manager.isRoundActive() then
-			base:travelTo(lastKnown, chaseSpeed(), function()
-				return findVisibleTarget() ~= nil
-			end)
-		end
+		)
 	end
 
 	-- ---------- main brain loop ----------
 
 	task.spawn(function()
 		while true do
-			if not base:isActive() or not (ctx.manager and ctx.manager.isRoundActive()) then
-				task.wait(0.25)
+			if not base:canAct() then
+				task.wait(0.2)
 			else
-				local target = findVisibleTarget()
+				local target = findTarget()
 				if target then
 					chase(target)
 				else
 					base:roamStep(cfg.ROAM_SPEED, function()
-						return findVisibleTarget() ~= nil
+						return findTarget() ~= nil
 					end)
 				end
 			end
