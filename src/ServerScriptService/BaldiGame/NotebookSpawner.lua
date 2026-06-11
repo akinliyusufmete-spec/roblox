@@ -1,26 +1,29 @@
 --[[
 	NotebookSpawner (ModuleScript, ServerScriptService.BaldiGame.NotebookSpawner)
 
-	Random notebook generation, exactly per the plan:
-	  1. MapBuilder placed ~23 invisible nodes tagged "NotebookSpawn"
-	     (any parts you tag yourself in Studio are included too).
+	Random notebook generation:
+	  1. Your map provides spawn points (BaldiMap/NotebookSpawns children,
+	     plus anything you tagged "NotebookSpawn" yourself).
 	  2. CollectionService:GetTagged("NotebookSpawn") collects them.
 	  3. Fisher-Yates shuffle, take the first NOTEBOOK_SPAWN_COUNT (10).
-	  4. Clone the Notebook model (built in code into ReplicatedStorage)
-	     at each chosen node.
+	  4. Clone the notebook model at each chosen node — YOUR model from
+	     ReplicatedStorage/BaldiAssets/Items/Notebook if it exists, else a
+	     placeholder built in code.
 	  5. ProximityPrompt collect -> destroy model, bump the server counter,
 	     fire NotebookCollected to all clients.
 
-	Also runs a tiny spin/bob animation so notebooks read as pickups.
+	Also runs a gentle spin/bob animation so notebooks read as pickups.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local AssetResolver = require(script.Parent.AssetResolver)
+
 local NotebookSpawner = {}
 
-local function buildNotebookTemplate()
+local function buildPlaceholderTemplate()
 	local folder = ReplicatedStorage:FindFirstChild("BaldiModels")
 	if not folder then
 		folder = Instance.new("Folder")
@@ -42,7 +45,6 @@ local function buildNotebookTemplate()
 	cover.Material = Enum.Material.SmoothPlastic
 	cover.Anchored = true
 	cover.CanCollide = false
-	cover.CanQuery = false
 	cover.TopSurface = Enum.SurfaceType.Smooth
 	cover.BottomSurface = Enum.SurfaceType.Smooth
 	cover.Parent = model
@@ -54,7 +56,6 @@ local function buildNotebookTemplate()
 	pages.Material = Enum.Material.SmoothPlastic
 	pages.Anchored = true
 	pages.CanCollide = false
-	pages.CanQuery = false
 	pages.CFrame = cover.CFrame * CFrame.new(0, 0.23, 0)
 	pages.Parent = model
 
@@ -65,7 +66,6 @@ end
 
 function NotebookSpawner.init(ctx)
 	local self = {}
-	local template = buildNotebookTemplate()
 	local active = {} -- [model] = { base = CFrame, phase = number }
 	local rng = Random.new()
 
@@ -106,7 +106,11 @@ function NotebookSpawner.init(ctx)
 	function self.spawnForRound()
 		self.clear()
 
-		-- 2. collect every tagged node (built ones + any you added in Studio)
+		-- resolved fresh each round so you can drop your model in and just
+		-- press Retry to see it
+		local template = AssetResolver.itemTemplate("Notebook") or buildPlaceholderTemplate()
+
+		-- 2. collect every tagged node
 		local nodes = {}
 		for _, node in ipairs(CollectionService:GetTagged("NotebookSpawn")) do
 			if node:IsDescendantOf(workspace) then
@@ -125,19 +129,22 @@ function NotebookSpawner.init(ctx)
 			local node = nodes[index]
 
 			-- 4. clone and position at the node
-			local notebook = template:Clone()
+			local notebook = AssetResolver.preparePropClone(template)
 			local baseCFrame = CFrame.new(node.Position + Vector3.new(0, 0.8, 0))
 				* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
 			notebook:PivotTo(baseCFrame)
 
 			-- 5. collect interaction
+			local promptParent = notebook:IsA("BasePart") and notebook
+				or notebook.PrimaryPart
+				or notebook:FindFirstChildWhichIsA("BasePart", true)
 			local prompt = Instance.new("ProximityPrompt")
 			prompt.ActionText = "Collect"
 			prompt.ObjectText = "Notebook"
 			prompt.HoldDuration = 0
 			prompt.MaxActivationDistance = ctx.config.NOTEBOOK_PROMPT_DISTANCE
 			prompt.RequiresLineOfSight = false
-			prompt.Parent = notebook.PrimaryPart
+			prompt.Parent = promptParent
 
 			prompt.Triggered:Connect(function(player)
 				if not active[notebook] then

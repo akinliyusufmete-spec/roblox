@@ -45,6 +45,86 @@ local files = {
 	{
 		root = "ReplicatedStorage",
 		folders = { "BaldiShared" },
+		name = "AssetConfig",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	AssetConfig (ModuleScript, ReplicatedStorage.BaldiShared.AssetConfig)
+
+	PASTE YOUR ASSET IDS HERE — this is the one file you edit to skin the
+	whole game with your own images and sounds.
+
+	Every entry left as "" falls back to a built-in placeholder (plain
+	colors / engine sounds), so the game always runs. Replace entries one
+	at a time as you finish assets.
+
+	An image id looks like:  "rbxassetid://1234567890"
+	To get one: Studio -> Asset Manager -> Import your image (Decal),
+	right-click it -> Copy Asset ID.
+
+	Sound ids use the same format. Leave "" to keep the built-in sound.
+]]
+
+local AssetConfig = {}
+
+-- ========== UI images ==========
+AssetConfig.IMAGES = {
+	-- full-screen backgrounds
+	MENU_BACKGROUND = "", -- main menu (like the original game's title art)
+	COUNTDOWN_BACKGROUND = "", -- "Get ready..." screen
+	WIN_BACKGROUND = "", -- ESCAPED! screen
+	LOSE_BACKGROUND = "", -- CAUGHT! screen
+	DETENTION_BACKGROUND = "", -- detention overlay (semi-transparent works best)
+	FROST_OVERLAY = "", -- Frosty chill overlay (transparent PNG, icy edges)
+
+	-- HUD pieces
+	NOTEBOOK_ICON = "", -- little notebook next to the counter (top left)
+	NICKEL_ICON = "", -- coin icon (top right)
+	ITEM_SLOT = "", -- background of each item square (top right)
+	STAMINA_BACK = "", -- stamina bar backplate
+	STAMINA_FILL = "", -- stamina bar fill (tinted green/yellow/red by code)
+
+	-- buttons / panels
+	PLAY_BUTTON = "", -- the main menu PLAY button
+	PANEL = "", -- "HOW TO PLAY" panel background
+	VENDING_PANEL = "", -- vending machine popup background
+
+	-- item pictures (shown inside slots and the vending popup)
+	ITEMS = {
+		BSODA = "",
+		ZESTY = "",
+	},
+}
+
+-- ========== sounds ==========
+-- Client feedback sounds (played by SoundController):
+--   click, collect, nickel, buy, error, exhausted, caught, detention,
+--   frost, use, win
+-- Server NPC sounds:
+--   chase   = ChatRevive's repeating chase noise (the "slap")
+--   whistle = LP's alert when he starts chasing
+AssetConfig.SOUNDS = {
+	click = "",
+	collect = "",
+	nickel = "",
+	buy = "",
+	error = "",
+	exhausted = "",
+	caught = "",
+	detention = "",
+	frost = "",
+	use = "",
+	win = "",
+	chase = "",
+	whistle = "",
+}
+
+return AssetConfig
+]=====],
+	},
+	{
+		root = "ReplicatedStorage",
+		folders = { "BaldiShared" },
 		name = "GameConfig",
 		class = "ModuleScript",
 		source = [=====[
@@ -197,8 +277,8 @@ return GameConfig
 	Server bootstrap. Builds the shared context table and initializes every
 	system in dependency order:
 
-	  config -> remotes -> map -> NPCs -> economy/detention/notebooks/exit
-	         -> GameManager (last; it wires the Play button)
+	  config/assets -> remotes -> map -> NPCs -> economy/detention/
+	  notebooks/exit -> GameManager (last; it wires the Play button)
 
 	All systems communicate through the ctx table instead of require-ing
 	each other, which keeps the module graph cycle-free.
@@ -208,9 +288,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local shared = ReplicatedStorage:WaitForChild("BaldiShared")
 local GameConfig = require(shared:WaitForChild("GameConfig"))
+local AssetConfig = require(shared:WaitForChild("AssetConfig"))
 
 local RemoteSetup = require(script.Parent.RemoteSetup)
-local MapBuilder = require(script.Parent.MapBuilder)
+local MapResolver = require(script.Parent.MapResolver)
 local ChatReviveAI = require(script.Parent.ChatReviveAI)
 local LpAI = require(script.Parent.LpAI)
 local FrostyAI = require(script.Parent.FrostyAI)
@@ -222,8 +303,9 @@ local GameManager = require(script.Parent.GameManager)
 
 local ctx = {
 	config = GameConfig,
+	assets = AssetConfig, -- your image/sound ids (NPC sounds read these)
 	remotes = nil, -- RemoteSetup
-	map = nil, -- MapBuilder
+	map = nil, -- MapResolver (your BaldiMap, or the placeholder school)
 	npcs = {}, -- ChatReviveAI / LpAI / FrostyAI register themselves
 	manager = nil, -- GameManager
 	economy = nil, -- ItemEconomy
@@ -233,9 +315,9 @@ local ctx = {
 }
 
 RemoteSetup.init(ctx)
-MapBuilder.build(ctx)
+MapResolver.resolve(ctx)
 
--- Give the navmesh a moment to bake over the freshly generated geometry
+-- Give the navmesh a moment to bake over freshly generated geometry
 -- before the first paths are computed (paths fail gracefully anyway).
 task.wait(1)
 
@@ -250,7 +332,122 @@ NotebookSpawner.init(ctx)
 ExitDoorManager.init(ctx)
 GameManager.init(ctx)
 
-print("[BaldiGame] Server ready. Map built, NPCs spawned, remotes live.")
+print("[BaldiGame] Server ready. Map resolved, NPCs spawned, remotes live.")
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "AssetResolver",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	AssetResolver (ModuleScript, ServerScriptService.BaldiGame.AssetResolver)
+
+	Looks up the hand-made models you place under:
+
+	  ReplicatedStorage
+	  └── BaldiAssets
+	      ├── Npcs
+	      │   ├── ChatRevive   (Model with Humanoid + HumanoidRootPart)
+	      │   ├── LP
+	      │   └── Frosty
+	      └── Items
+	          ├── Notebook     (Model or Part)
+	          ├── Nickel
+	          ├── BSODA
+	          ├── ZESTY
+	          └── BsodaProjectile  (optional — the flying blast visual)
+
+	Everything is optional: a missing asset gets a one-time console note and
+	the game uses its built-in placeholder instead, so you can replace
+	pieces one at a time while you build.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local AssetResolver = {}
+
+local noted = {}
+
+local function noteOnce(key, message)
+	if noted[key] then
+		return
+	end
+	noted[key] = true
+	print("[BaldiGame] " .. message)
+end
+
+local function assetsFolder(childName)
+	local root = ReplicatedStorage:FindFirstChild("BaldiAssets")
+	if not root then
+		return nil
+	end
+	return root:FindFirstChild(childName)
+end
+
+-- Your NPC rig, validated; nil -> caller builds the placeholder rig.
+function AssetResolver.npcTemplate(name)
+	local folder = assetsFolder("Npcs")
+	local model = folder and folder:FindFirstChild(name)
+	if not model then
+		noteOnce("npc_" .. name, string.format(
+			"No custom rig at ReplicatedStorage/BaldiAssets/Npcs/%s — using the placeholder rig.", name))
+		return nil
+	end
+	if not model:IsA("Model") or not model:FindFirstChildOfClass("Humanoid")
+		or not model:FindFirstChild("HumanoidRootPart") then
+		warn(string.format(
+			"[BaldiGame] BaldiAssets/Npcs/%s must be a Model containing a Humanoid and a HumanoidRootPart — using the placeholder rig instead.",
+			name))
+		return nil
+	end
+	return model
+end
+
+-- Your item/pickup model; nil -> caller builds the placeholder.
+function AssetResolver.itemTemplate(name)
+	local folder = assetsFolder("Items")
+	local template = folder and folder:FindFirstChild(name)
+	if not template then
+		noteOnce("item_" .. name, string.format(
+			"No custom model at ReplicatedStorage/BaldiAssets/Items/%s — using the placeholder.", name))
+		return nil
+	end
+	if not (template:IsA("Model") or template:IsA("BasePart")) then
+		warn(string.format(
+			"[BaldiGame] BaldiAssets/Items/%s must be a Model or a Part — using the placeholder instead.", name))
+		return nil
+	end
+	if template:IsA("Model") and not template:FindFirstChildWhichIsA("BasePart", true) then
+		warn(string.format(
+			"[BaldiGame] BaldiAssets/Items/%s has no parts inside — using the placeholder instead.", name))
+		return nil
+	end
+	return template
+end
+
+-- Clone helper for pickups/props: anchored, non-colliding, script-free.
+function AssetResolver.preparePropClone(template)
+	local clone = template:Clone()
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+		elseif descendant:IsA("BaseScript") or descendant:IsA("ModuleScript") then
+			descendant:Destroy()
+		end
+	end
+	if clone:IsA("BasePart") then
+		clone.Anchored = true
+		clone.CanCollide = false
+	elseif clone:IsA("Model") and not clone.PrimaryPart then
+		clone.PrimaryPart = clone:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return clone
+end
+
+return AssetResolver
 ]=====],
 	},
 	{
@@ -269,7 +466,12 @@ print("[BaldiGame] Server ready. Map built, NPCs spawned, remotes live.")
 	  - Loses sight: walks to the last known position, then resumes roaming.
 	  - Touch (catch radius): game over for that player; a Nickel is dropped
 	    where they were caught.
-	  - Enrages when all notebooks are collected: faster, scans more often.
+	  - Enrages when all notebooks are collected: faster, scans more often,
+	    glows red (your rig gets a red Highlight; the placeholder also
+	    recolors).
+
+	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/ChatRevive
+	Chase sound: AssetConfig.SOUNDS.chase (else a built-in snap)
 ]]
 
 local RunService = game:GetService("RunService")
@@ -291,23 +493,25 @@ function ChatReviveAI.init(ctx)
 		enraged = false,
 	}
 
-	local model = NpcFactory.createRig({
+	local model = NpcFactory.create({
 		name = cfg.NAME,
 		bodyColor = COLOR_BODY,
 		headColor = COLOR_HEAD,
 		tagColor = Color3.fromRGB(255, 90, 80),
 	}, ctx.map.npcFolder)
-	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.CHATREVIVE)
+	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.CHATREVIVE,
+		(cfg.ROAM_SPEED + cfg.CHASE_SPEED) / 2)
 	self.base = base
 	self.model = model
 
-	-- the iconic chase noise: a snap played on every re-path tick
+	-- the iconic chase noise, played on every re-path tick
+	local chaseSoundId = ctx.assets.SOUNDS.chase
 	local slap = Instance.new("Sound")
-	slap.Name = "ChaseSlap"
-	slap.SoundId = "rbxasset://sounds/snap.mp3"
+	slap.Name = "ChaseSound"
+	slap.SoundId = (chaseSoundId ~= "" and chaseSoundId) or "rbxasset://sounds/snap.mp3"
 	slap.Volume = 0.8
 	slap.RollOffMaxDistance = 90
-	slap.Parent = model:WaitForChild("Torso")
+	slap.Parent = base.root
 	self.slapSound = slap
 
 	-- ---------- helpers ----------
@@ -431,34 +635,52 @@ function ChatReviveAI.init(ctx)
 
 	-- ---------- public API ----------
 
+	local isPlaceholder = model:GetAttribute("BaldiPlaceholderRig") == true
+
 	function self.enrage()
 		if self.enraged then
 			return
 		end
 		self.enraged = true
-		for _, part in ipairs(model:GetChildren()) do
-			if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
-				part.Color = COLOR_ENRAGED
+		if isPlaceholder then
+			for _, part in ipairs(model:GetChildren()) do
+				if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
+					part.Color = COLOR_ENRAGED
+				end
 			end
+		else
+			-- tint your rig without overwriting its colors
+			local tint = Instance.new("Highlight")
+			tint.Name = "EnrageTint"
+			tint.FillColor = Color3.fromRGB(180, 20, 20)
+			tint.FillTransparency = 0.7
+			tint.OutlineColor = Color3.fromRGB(120, 0, 0)
+			tint.OutlineTransparency = 0.4
+			tint.Parent = model
 		end
 		local glow = Instance.new("PointLight")
 		glow.Name = "EnrageGlow"
 		glow.Color = Color3.fromRGB(255, 40, 40)
 		glow.Range = 12
 		glow.Brightness = 2
-		glow.Parent = model:FindFirstChild("Torso")
+		glow.Parent = base.root
 	end
 
 	function self.reset()
 		self.enraged = false
-		local torso = model:FindFirstChild("Torso")
-		local oldGlow = torso and torso:FindFirstChild("EnrageGlow")
+		local oldGlow = base.root:FindFirstChild("EnrageGlow")
 		if oldGlow then
 			oldGlow:Destroy()
 		end
-		for _, part in ipairs(model:GetChildren()) do
-			if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
-				part.Color = (part.Name == "Head") and COLOR_HEAD or COLOR_BODY
+		local oldTint = model:FindFirstChild("EnrageTint")
+		if oldTint then
+			oldTint:Destroy()
+		end
+		if isPlaceholder then
+			for _, part in ipairs(model:GetChildren()) do
+				if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
+					part.Color = (part.Name == "Head") and COLOR_HEAD or COLOR_BODY
+				end
 			end
 		end
 		base:resetToSpawn()
@@ -668,6 +890,9 @@ return ExitDoorManager
 	    and shows the frost vignette). Per-player cooldown so it doesn't
 	    re-trigger every frame.
 	  - Optionally chills other NPCs that wander too close (SLOWS_NPCS).
+
+	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/Frosty
+	(the glow/transparency styling below applies to the placeholder only)
 ]]
 
 local RunService = game:GetService("RunService")
@@ -684,7 +909,7 @@ function FrostyAI.init(ctx)
 	local cfg = ctx.config.NPC.FROSTY
 	local self = { ctx = ctx, cfg = cfg }
 
-	local model = NpcFactory.createRig({
+	local model = NpcFactory.create({
 		name = cfg.NAME,
 		bodyColor = COLOR_BODY,
 		headColor = COLOR_HEAD,
@@ -692,7 +917,7 @@ function FrostyAI.init(ctx)
 		glowColor = Color3.fromRGB(150, 220, 255),
 		tagColor = Color3.fromRGB(170, 230, 255),
 	}, ctx.map.npcFolder)
-	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.FROSTY)
+	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.FROSTY) -- never chases
 	self.base = base
 	self.model = model
 
@@ -772,12 +997,10 @@ return FrostyAI
 	  IDLE ── Play pressed ──> COUNTDOWN (3s, players anchored at entrance)
 	       <── all players out ── ACTIVE (notebooks spawned, NPCs gated)
 
-	Activation gating per the plan:
-	  0 notebooks  -> all NPCs frozen
-	  1 notebook   -> all NPCs activate (roam loops start)
-	  10 notebooks -> the main chaser enrages + the exit opens
-	                  (the plan's "Silver enrages" trigger — wired to
-	                   ChatRevive since it is the primary antagonist)
+	Activation gating:
+	  0 notebooks    -> all NPCs frozen
+	  1 notebook     -> all NPCs activate (roam loops start)
+	  last notebook  -> the main chaser enrages + the exit opens
 
 	Per-player outcomes:
 	  - Caught by ChatRevive -> lose screen, a Nickel drops at the spot.
@@ -926,7 +1149,7 @@ function GameManager.init(ctx)
 			participants[player] = nil
 			return
 		end
-		remotes.GameStarted:FireClient(player)
+		remotes.GameStarted:FireClient(player, notebooksTotal)
 		remotes.NotebookCollected:FireClient(player, notebooksCollected, notebooksTotal)
 		if ctx.exitDoor.open then
 			remotes.PhaseChanged:FireClient(player, "EXIT_OPEN")
@@ -959,14 +1182,14 @@ function GameManager.init(ctx)
 				if hrp then
 					hrp.Anchored = false
 				end
-				remotes.GameStarted:FireClient(player)
+				remotes.GameStarted:FireClient(player, notebooksTotal)
 				remotes.NotebookCollected:FireClient(player, notebooksCollected, notebooksTotal)
 			end
 			checkRoundEnd() -- everyone may have left during the countdown
 		end)
 	end
 
-	-- ===================== plan step 6: notebook -> HUD + gating =====================
+	-- ===================== notebook -> HUD + gating =====================
 
 	function self.onNotebookCollected(byPlayer)
 		notebooksCollected = notebooksCollected + 1
@@ -1143,10 +1366,18 @@ return GameManager
 	      BSODA -> server-stepped projectile that knocks back + stuns NPCs
 	  - Vending: ProximityPrompt opens the client popup; BuyItem validates
 	    nickel count and a free slot before granting.
+
+	Your models (all optional, placeholders otherwise):
+	  ReplicatedStorage/BaldiAssets/Items/Nickel
+	  ReplicatedStorage/BaldiAssets/Items/BSODA            (world pickup)
+	  ReplicatedStorage/BaldiAssets/Items/ZESTY            (world pickup)
+	  ReplicatedStorage/BaldiAssets/Items/BsodaProjectile  (flying blast)
 ]]
 
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
+
+local AssetResolver = require(script.Parent.AssetResolver)
 
 local ItemEconomy = {}
 
@@ -1221,21 +1452,27 @@ function ItemEconomy.init(ctx)
 		part.Material = Enum.Material.SmoothPlastic
 		part.Anchored = true
 		part.CanCollide = false
-		part.CanQuery = false
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth
 		return part
 	end
 
 	function self.spawnNickel(position)
-		local coin = makePickupPart("Nickel", Color3.fromRGB(255, 210, 70), Vector3.new(0.25, 1.4, 1.4))
-		coin.Shape = Enum.PartType.Cylinder
-		coin.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+		local template = AssetResolver.itemTemplate("Nickel")
+		local coin
+		if template then
+			coin = AssetResolver.preparePropClone(template)
+			coin:PivotTo(CFrame.new(position + Vector3.new(0, 0.7, 0)))
+		else
+			coin = makePickupPart("Nickel", Color3.fromRGB(255, 210, 70), Vector3.new(0.25, 1.4, 1.4))
+			coin.Shape = Enum.PartType.Cylinder
+			coin.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+			local sparkle = Instance.new("PointLight")
+			sparkle.Color = Color3.fromRGB(255, 220, 90)
+			sparkle.Range = 5
+			sparkle.Parent = coin
+		end
 		coin:SetAttribute("IsNickel", true)
-		local sparkle = Instance.new("PointLight")
-		sparkle.Color = Color3.fromRGB(255, 220, 90)
-		sparkle.Range = 5
-		sparkle.Parent = coin
 		coin.Parent = ctx.map.pickupsFolder
 	end
 
@@ -1244,15 +1481,21 @@ function ItemEconomy.init(ctx)
 		if not def then
 			return
 		end
-		local color = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+		local template = AssetResolver.itemTemplate(itemId)
 		local pickup
-		if itemId == "BSODA" then
-			pickup = makePickupPart("Pickup_BSODA", color, Vector3.new(2, 1.1, 1.1))
-			pickup.Shape = Enum.PartType.Cylinder
-			pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
+		if template then
+			pickup = AssetResolver.preparePropClone(template)
+			pickup:PivotTo(CFrame.new(position + Vector3.new(0, 0.7, 0)))
 		else
-			pickup = makePickupPart("Pickup_" .. itemId, color, Vector3.new(1.6, 0.5, 2.2))
-			pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0))
+			local color = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+			if itemId == "BSODA" then
+				pickup = makePickupPart("Pickup_BSODA", color, Vector3.new(2, 1.1, 1.1))
+				pickup.Shape = Enum.PartType.Cylinder
+				pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
+			else
+				pickup = makePickupPart("Pickup_" .. itemId, color, Vector3.new(1.6, 0.5, 2.2))
+				pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0))
+			end
 		end
 		pickup:SetAttribute("ItemId", itemId)
 		pickup.Parent = ctx.map.pickupsFolder
@@ -1294,7 +1537,8 @@ function ItemEconomy.init(ctx)
 							local hrp = character and character:FindFirstChild("HumanoidRootPart")
 							if hrp then
 								for _, pickup in ipairs(pickups) do
-									if pickup.Parent and (pickup.Position - hrp.Position).Magnitude < config.PICKUP_RADIUS then
+									if pickup.Parent
+										and (pickup:GetPivot().Position - hrp.Position).Magnitude < config.PICKUP_RADIUS then
 										if pickup:GetAttribute("IsNickel") then
 											pickup:Destroy()
 											self.addNickels(player, 1)
@@ -1321,14 +1565,11 @@ function ItemEconomy.init(ctx)
 
 	-- ===================== BSODA projectile =====================
 
-	local function fireBsoda(player, direction)
-		local character = player.Character
-		local hrp = character and character:FindFirstChild("HumanoidRootPart")
-		if not hrp then
-			return
+	local function makeProjectileVisual()
+		local template = AssetResolver.itemTemplate("BsodaProjectile")
+		if template then
+			return AssetResolver.preparePropClone(template)
 		end
-		local cfg = config.BSODA_PROJECTILE
-
 		local can = Instance.new("Part")
 		can.Name = "BsodaBlast"
 		can.Shape = Enum.PartType.Ball
@@ -1346,12 +1587,23 @@ function ItemEconomy.init(ctx)
 		fizz.Speed = NumberRange.new(2, 4)
 		fizz.Color = ColorSequence.new(Color3.fromRGB(160, 210, 255))
 		fizz.Parent = can
+		return can
+	end
 
+	local function fireBsoda(player, direction)
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if not hrp then
+			return
+		end
+		local cfg = config.BSODA_PROJECTILE
+
+		local blast = makeProjectileVisual()
 		local position = hrp.Position + direction * 2.5 + Vector3.new(0, 0.5, 0)
-		can.CFrame = CFrame.new(position)
-		can.Parent = ctx.map.projectilesFolder
+		blast:PivotTo(CFrame.new(position, position + direction))
+		blast.Parent = ctx.map.projectilesFolder
 
-		-- exclude the shooter so the can doesn't pop on their own body
+		-- exclude the shooter so the blast doesn't pop on their own body
 		local params = RaycastParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
 		local excluded = { ctx.map.npcFolder, ctx.map.notebooksFolder, ctx.map.pickupsFolder, ctx.map.projectilesFolder }
@@ -1364,7 +1616,7 @@ function ItemEconomy.init(ctx)
 
 		task.spawn(function()
 			local traveled = 0
-			while traveled < cfg.RANGE and can.Parent do
+			while traveled < cfg.RANGE and blast.Parent do
 				local dt = task.wait()
 				local step = direction * cfg.SPEED * dt
 				local wallHit = workspace:Raycast(position, step, params)
@@ -1373,7 +1625,7 @@ function ItemEconomy.init(ctx)
 				end
 				position = position + step
 				traveled = traveled + step.Magnitude
-				can.CFrame = CFrame.new(position)
+				blast:PivotTo(CFrame.new(position, position + direction))
 
 				local hitNpc = nil
 				for _, npc in pairs(ctx.npcs) do
@@ -1397,7 +1649,7 @@ function ItemEconomy.init(ctx)
 					break
 				end
 			end
-			can:Destroy()
+			blast:Destroy()
 		end)
 	end
 
@@ -1512,6 +1764,9 @@ return ItemEconomy
 	replicate to the server, so we measure the character's actual horizontal
 	velocity instead — same threshold, but it can't be spoofed. Sprinting
 	(24) trips it, walking (16) never does.
+
+	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/LP
+	Alert sound: AssetConfig.SOUNDS.whistle (else a built-in ping)
 ]]
 
 local RunService = game:GetService("RunService")
@@ -1528,23 +1783,25 @@ function LpAI.init(ctx)
 	local cfg = ctx.config.NPC.LP
 	local self = { ctx = ctx, cfg = cfg }
 
-	local model = NpcFactory.createRig({
+	local model = NpcFactory.create({
 		name = cfg.NAME,
 		bodyColor = COLOR_BODY,
 		headColor = COLOR_HEAD,
 		tagColor = Color3.fromRGB(120, 150, 255),
 	}, ctx.map.npcFolder)
-	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.LP)
+	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.LP,
+		(cfg.ROAM_SPEED + cfg.CHASE_SPEED) / 2)
 	self.base = base
 	self.model = model
 
+	local whistleSoundId = ctx.assets.SOUNDS.whistle
 	local whistle = Instance.new("Sound")
 	whistle.Name = "Whistle"
-	whistle.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+	whistle.SoundId = (whistleSoundId ~= "" and whistleSoundId) or "rbxasset://sounds/electronicpingshort.wav"
 	whistle.Volume = 0.9
-	whistle.PlaybackSpeed = 0.6
+	whistle.PlaybackSpeed = whistleSoundId ~= "" and 1 or 0.6
 	whistle.RollOffMaxDistance = 80
-	whistle.Parent = model:WaitForChild("Torso")
+	whistle.Parent = base.root
 
 	-- ---------- helpers ----------
 
@@ -1679,23 +1936,1034 @@ return LpAI
 	{
 		root = "ServerScriptService",
 		folders = { "BaldiGame" },
-		name = "MapBuilder",
+		name = "MapResolver",
 		class = "ModuleScript",
 		source = [=====[
 --[[
-	MapBuilder (ModuleScript, ServerScriptService.BaldiGame.MapBuilder)
+	MapResolver (ModuleScript, ServerScriptService.BaldiGame.MapResolver)
 
-	Procedurally generates the entire schoolhouse at server startup so the game
-	is playable in any empty baseplate place with zero manual Studio work:
+	Reads YOUR hand-built map from Workspace/BaldiMap. If no BaldiMap
+	exists, PlaceholderMap generates the stand-in school (same structure),
+	so the resolver treats both identically.
 
-	  - hallway ring + 4 classrooms + library + gym + detention room
-	  - entrance corridor with the (locked) EXIT door
-	  - 23 invisible NotebookSpawn nodes, tagged via CollectionService
-	  - AI waypoints, NPC spawn markers, vending machines, lobby
+	Expected structure (see STUDIO_SETUP.md for the full guide):
 
-	If a folder named "BaldiMap" already exists in Workspace (e.g. you built a
-	custom school by hand), generation is skipped and your map is used instead.
-	Any extra parts you tag "NotebookSpawn" in Studio are picked up too.
+	  Workspace/BaldiMap
+	  ├── Geometry        your walls/floors/furniture. Must contain a Part
+	  │                   named "ExitDoor" and a SpawnLocation named
+	  │                   "LobbySpawn" (anywhere inside, nesting is fine).
+	  │                   Optional: parts/models named VendingMachine_BSODA
+	  │                   and VendingMachine_ZESTY (prompts auto-added).
+	  ├── Markers         invisible parts marking positions:
+	  │                   RoundSpawn (players start here, facing its front),
+	  │                   DetentionSpot, ChatReviveSpawn, LpSpawn, FrostySpawn
+	  ├── Waypoints       parts the NPCs roam between (8+ recommended)
+	  ├── NotebookSpawns  parts where notebooks may appear (10+ recommended;
+	  │                   parts you tag "NotebookSpawn" elsewhere also count)
+	  ├── NickelSpawns    optional parts; starter coins appear here
+	  └── ItemSpawns      optional parts named BSODA / ZESTY; one free
+	                      pickup of each appears there per round
+
+	Anything missing gets a clear warning and a sensible fallback, so a
+	half-built map still runs.
+]]
+
+local CollectionService = game:GetService("CollectionService")
+local PhysicsService = game:GetService("PhysicsService")
+
+local PlaceholderMap = require(script.Parent.PlaceholderMap)
+
+local MapResolver = {}
+
+local function ensureFolder(root, name)
+	local folder = root:FindFirstChild(name)
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = name
+		folder.Parent = root
+	end
+	return folder
+end
+
+-- Marker part -> spawn CFrame (lifted so a humanoid stands on the floor,
+-- keeping the marker's orientation so RoundSpawn controls facing).
+local function markerCFrame(markersFolder, name, lift, fallbackCFrame)
+	local part = markersFolder and markersFolder:FindFirstChild(name)
+	if part and part:IsA("BasePart") then
+		return part.CFrame + Vector3.new(0, lift, 0)
+	end
+	warn(string.format(
+		"[BaldiGame] BaldiMap/Markers/%s not found — using the default position. Add an invisible Part with that name to control it.",
+		name))
+	return fallbackCFrame
+end
+
+local function firstBasePart(instance)
+	if instance:IsA("BasePart") then
+		return instance
+	end
+	return instance:FindFirstChildWhichIsA("BasePart", true)
+end
+
+function MapResolver.resolve(ctx)
+	local config = ctx.config
+
+	-- Players never physically collide with NPCs, so a roaming character
+	-- can never wedge a player into a doorway.
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup("BaldiNpc")
+		PhysicsService:RegisterCollisionGroup("BaldiPlayer")
+		PhysicsService:CollisionGroupSetCollidable("BaldiNpc", "BaldiPlayer", false)
+	end)
+
+	local root = workspace:FindFirstChild("BaldiMap")
+	if not root then
+		print("[BaldiGame] No Workspace/BaldiMap found — generating the placeholder school. "
+			.. "Build your own map in a folder named BaldiMap to replace it (see STUDIO_SETUP.md).")
+		root = PlaceholderMap.generate(config)
+	end
+
+	local geometry = ensureFolder(root, "Geometry")
+	local markers = root:FindFirstChild("Markers")
+	local waypoints = ensureFolder(root, "Waypoints")
+	local notebookSpawns = ensureFolder(root, "NotebookSpawns")
+	local nickelSpawnsFolder = root:FindFirstChild("NickelSpawns")
+	local itemSpawnsFolder = root:FindFirstChild("ItemSpawns")
+
+	-- runtime containers (created empty; filled during play)
+	local notebooks = ensureFolder(root, "Notebooks")
+	local pickups = ensureFolder(root, "Pickups")
+	local npcFolder = ensureFolder(root, "Npcs")
+	local projectiles = ensureFolder(root, "Projectiles")
+
+	-- ---------- notebook spawn nodes ----------
+	-- Children of NotebookSpawns are tagged automatically; any part you
+	-- tagged "NotebookSpawn" by hand elsewhere already counts.
+	for _, node in ipairs(notebookSpawns:GetChildren()) do
+		if node:IsA("BasePart") and not CollectionService:HasTag(node, "NotebookSpawn") then
+			CollectionService:AddTag(node, "NotebookSpawn")
+		end
+	end
+	local taggedCount = 0
+	for _, node in ipairs(CollectionService:GetTagged("NotebookSpawn")) do
+		if node:IsDescendantOf(workspace) then
+			taggedCount = taggedCount + 1
+		end
+	end
+	if taggedCount < config.NOTEBOOK_SPAWN_COUNT then
+		warn(string.format(
+			"[BaldiGame] Only %d notebook spawn points found (want %d+). Add more parts to BaldiMap/NotebookSpawns.",
+			taggedCount, config.NOTEBOOK_SPAWN_COUNT))
+	end
+
+	if #waypoints:GetChildren() == 0 then
+		warn("[BaldiGame] BaldiMap/Waypoints is empty — NPCs have nowhere to roam. Add invisible parts around your map.")
+	end
+
+	-- ---------- named geometry ----------
+	local exitDoor = geometry:FindFirstChild("ExitDoor", true)
+	if exitDoor and not exitDoor:IsA("BasePart") then
+		exitDoor = firstBasePart(exitDoor)
+	end
+	if not exitDoor then
+		warn("[BaldiGame] No Part named ExitDoor inside BaldiMap/Geometry — players cannot win until you add one.")
+	end
+
+	local lobbySpawn = geometry:FindFirstChild("LobbySpawn", true)
+	if not (lobbySpawn and lobbySpawn:IsA("SpawnLocation")) then
+		lobbySpawn = geometry:FindFirstChildWhichIsA("SpawnLocation", true)
+	end
+	if not lobbySpawn then
+		warn("[BaldiGame] No SpawnLocation named LobbySpawn in BaldiMap/Geometry — players will spawn at the world origin.")
+	end
+
+	-- ---------- vending machines ----------
+	-- Any part or model named VendingMachine_<ITEMID>; a ProximityPrompt is
+	-- attached automatically unless you already put one on it.
+	local vendingMachines = {}
+	for _, child in ipairs(geometry:GetDescendants()) do
+		local itemId = child.Name:match("^VendingMachine_(%u+)$")
+		if itemId and (child:IsA("BasePart") or child:IsA("Model")) and config.ITEMS[itemId] then
+			local part = firstBasePart(child)
+			if part then
+				local prompt = child:FindFirstChildOfClass("ProximityPrompt")
+					or part:FindFirstChildOfClass("ProximityPrompt")
+				if not prompt then
+					prompt = Instance.new("ProximityPrompt")
+					prompt.ActionText = "Browse"
+					prompt.ObjectText = config.ITEMS[itemId].displayName .. " Machine"
+					prompt.HoldDuration = 0
+					prompt.MaxActivationDistance = 5
+					prompt.RequiresLineOfSight = false
+					prompt.Parent = part
+				end
+				table.insert(vendingMachines, { part = part, prompt = prompt, itemId = itemId })
+			end
+		end
+	end
+	if #vendingMachines == 0 then
+		print("[BaldiGame] No vending machines found. Name a part VendingMachine_BSODA or VendingMachine_ZESTY to add one.")
+	end
+
+	-- ---------- pickup spawn points ----------
+	local nickelSpawns = {}
+	if nickelSpawnsFolder then
+		for _, node in ipairs(nickelSpawnsFolder:GetChildren()) do
+			if node:IsA("BasePart") then
+				table.insert(nickelSpawns, node.Position)
+			end
+		end
+	end
+
+	local itemSpawns = {}
+	if itemSpawnsFolder then
+		for _, node in ipairs(itemSpawnsFolder:GetChildren()) do
+			if node:IsA("BasePart") and config.ITEMS[node.Name] then
+				itemSpawns[node.Name] = node.Position
+			end
+		end
+	end
+
+	ctx.map = {
+		root = root,
+		geometry = geometry,
+		waypointsFolder = waypoints,
+		spawnNodesFolder = notebookSpawns,
+		notebooksFolder = notebooks,
+		pickupsFolder = pickups,
+		npcFolder = npcFolder,
+		projectilesFolder = projectiles,
+		exitDoor = exitDoor,
+		lobbySpawn = lobbySpawn,
+		roundSpawnCFrame = markerCFrame(markers, "RoundSpawn", 2.5,
+			CFrame.lookAt(Vector3.new(0, 3.5, -58), Vector3.new(0, 3.5, -30))),
+		detentionCFrame = markerCFrame(markers, "DetentionSpot", 2.5,
+			CFrame.lookAt(Vector3.new(0, 3.5, -24), Vector3.new(0, 3.5, -36))),
+		npcSpawns = {
+			CHATREVIVE = markerCFrame(markers, "ChatReviveSpawn", 2, CFrame.new(90, 3, 0)),
+			LP = markerCFrame(markers, "LpSpawn", 2, CFrame.new(-75, 3, 0)),
+			FROSTY = markerCFrame(markers, "FrostySpawn", 2, CFrame.new(0, 3, 42)),
+		},
+		vendingMachines = vendingMachines,
+		nickelSpawns = nickelSpawns,
+		itemSpawns = itemSpawns,
+	}
+	return ctx.map
+end
+
+return MapResolver
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "NotebookSpawner",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	NotebookSpawner (ModuleScript, ServerScriptService.BaldiGame.NotebookSpawner)
+
+	Random notebook generation:
+	  1. Your map provides spawn points (BaldiMap/NotebookSpawns children,
+	     plus anything you tagged "NotebookSpawn" yourself).
+	  2. CollectionService:GetTagged("NotebookSpawn") collects them.
+	  3. Fisher-Yates shuffle, take the first NOTEBOOK_SPAWN_COUNT (10).
+	  4. Clone the notebook model at each chosen node — YOUR model from
+	     ReplicatedStorage/BaldiAssets/Items/Notebook if it exists, else a
+	     placeholder built in code.
+	  5. ProximityPrompt collect -> destroy model, bump the server counter,
+	     fire NotebookCollected to all clients.
+
+	Also runs a gentle spin/bob animation so notebooks read as pickups.
+]]
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local AssetResolver = require(script.Parent.AssetResolver)
+
+local NotebookSpawner = {}
+
+local function buildPlaceholderTemplate()
+	local folder = ReplicatedStorage:FindFirstChild("BaldiModels")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "BaldiModels"
+		folder.Parent = ReplicatedStorage
+	end
+	local existing = folder:FindFirstChild("Notebook")
+	if existing then
+		return existing
+	end
+
+	local model = Instance.new("Model")
+	model.Name = "Notebook"
+
+	local cover = Instance.new("Part")
+	cover.Name = "Cover"
+	cover.Size = Vector3.new(1.7, 0.35, 2.2)
+	cover.Color = Color3.fromRGB(200, 40, 40)
+	cover.Material = Enum.Material.SmoothPlastic
+	cover.Anchored = true
+	cover.CanCollide = false
+	cover.TopSurface = Enum.SurfaceType.Smooth
+	cover.BottomSurface = Enum.SurfaceType.Smooth
+	cover.Parent = model
+
+	local pages = Instance.new("Part")
+	pages.Name = "Pages"
+	pages.Size = Vector3.new(1.5, 0.12, 2)
+	pages.Color = Color3.fromRGB(245, 245, 235)
+	pages.Material = Enum.Material.SmoothPlastic
+	pages.Anchored = true
+	pages.CanCollide = false
+	pages.CFrame = cover.CFrame * CFrame.new(0, 0.23, 0)
+	pages.Parent = model
+
+	model.PrimaryPart = cover
+	model.Parent = folder
+	return model
+end
+
+function NotebookSpawner.init(ctx)
+	local self = {}
+	local active = {} -- [model] = { base = CFrame, phase = number }
+	local rng = Random.new()
+
+	-- spin & bob
+	local elapsed = 0
+	RunService.Heartbeat:Connect(function(dt)
+		elapsed = elapsed + dt
+		for model, info in pairs(active) do
+			if model.Parent then
+				local yaw = CFrame.Angles(0, elapsed * 1.6 + info.phase, 0)
+				local bob = Vector3.new(0, math.sin(elapsed * 2 + info.phase) * 0.2, 0)
+				model:PivotTo(info.base * yaw + bob)
+			end
+		end
+	end)
+
+	function self.clear()
+		for model in pairs(active) do
+			active[model] = nil
+			if model.Parent then
+				model:Destroy()
+			end
+		end
+		ctx.map.notebooksFolder:ClearAllChildren()
+	end
+
+	function self.remainingCount()
+		local count = 0
+		for model in pairs(active) do
+			if model.Parent then
+				count = count + 1
+			end
+		end
+		return count
+	end
+
+	-- Returns how many notebooks were actually placed this round.
+	function self.spawnForRound()
+		self.clear()
+
+		-- resolved fresh each round so you can drop your model in and just
+		-- press Retry to see it
+		local template = AssetResolver.itemTemplate("Notebook") or buildPlaceholderTemplate()
+
+		-- 2. collect every tagged node
+		local nodes = {}
+		for _, node in ipairs(CollectionService:GetTagged("NotebookSpawn")) do
+			if node:IsDescendantOf(workspace) then
+				table.insert(nodes, node)
+			end
+		end
+
+		-- 3. Fisher-Yates shuffle, no duplicates possible
+		for index = #nodes, 2, -1 do
+			local swap = rng:NextInteger(1, index)
+			nodes[index], nodes[swap] = nodes[swap], nodes[index]
+		end
+
+		local count = math.min(ctx.config.NOTEBOOK_SPAWN_COUNT, #nodes)
+		for index = 1, count do
+			local node = nodes[index]
+
+			-- 4. clone and position at the node
+			local notebook = AssetResolver.preparePropClone(template)
+			local baseCFrame = CFrame.new(node.Position + Vector3.new(0, 0.8, 0))
+				* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
+			notebook:PivotTo(baseCFrame)
+
+			-- 5. collect interaction
+			local promptParent = notebook:IsA("BasePart") and notebook
+				or notebook.PrimaryPart
+				or notebook:FindFirstChildWhichIsA("BasePart", true)
+			local prompt = Instance.new("ProximityPrompt")
+			prompt.ActionText = "Collect"
+			prompt.ObjectText = "Notebook"
+			prompt.HoldDuration = 0
+			prompt.MaxActivationDistance = ctx.config.NOTEBOOK_PROMPT_DISTANCE
+			prompt.RequiresLineOfSight = false
+			prompt.Parent = promptParent
+
+			prompt.Triggered:Connect(function(player)
+				if not active[notebook] then
+					return -- already collected
+				end
+				if not ctx.manager.isRoundActive() or not ctx.manager.isParticipant(player) then
+					return
+				end
+				active[notebook] = nil
+				notebook:Destroy()
+				ctx.manager.onNotebookCollected(player)
+			end)
+
+			notebook.Parent = ctx.map.notebooksFolder
+			active[notebook] = { base = baseCFrame, phase = rng:NextNumber(0, math.pi * 2) }
+		end
+
+		return count
+	end
+
+	ctx.notebookSpawner = self
+	return self
+end
+
+return NotebookSpawner
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "NpcAnimator",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	NpcAnimator (ModuleScript, ServerScriptService.BaldiGame.NpcAnimator)
+
+	Plays YOUR animations on an NPC rig. Put a Folder named "Animations"
+	inside the rig (ReplicatedStorage/BaldiAssets/Npcs/<Name>/Animations)
+	containing Animation instances named:
+
+	  Idle   — played while standing still
+	  Walk   — played while roaming
+	  Chase  — played while moving faster than the chase threshold
+	           (optional; falls back to Walk)
+
+	All are optional — a rig with no Animations folder simply doesn't
+	animate (the placeholder rigs work this way). Tracks loop and
+	crossfade. Server-side playback replicates to every client.
+]]
+
+local NpcAnimator = {}
+
+local POLL_INTERVAL = 0.15
+local MOVING_THRESHOLD = 0.5 -- studs/sec; below this counts as standing
+
+-- chaseThreshold: WalkSpeed above which "Chase" plays instead of "Walk".
+-- Pass math.huge for characters that never chase (e.g. Frosty).
+function NpcAnimator.attach(model, chaseThreshold)
+	chaseThreshold = chaseThreshold or math.huge
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	local folder = model:FindFirstChild("Animations")
+	if not humanoid or not folder then
+		return nil
+	end
+
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+
+	local tracks = {}
+	for _, name in ipairs({ "Idle", "Walk", "Chase" }) do
+		local animation = folder:FindFirstChild(name)
+		if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then
+			local ok, track = pcall(function()
+				return animator:LoadAnimation(animation)
+			end)
+			if ok and track then
+				track.Looped = true
+				track.Priority = Enum.AnimationPriority.Movement
+				tracks[name] = track
+			else
+				warn(string.format("[BaldiGame] Could not load animation %s/%s", model.Name, name))
+			end
+		end
+	end
+	if next(tracks) == nil then
+		return nil
+	end
+
+	local self = { running = true, current = nil }
+
+	local function play(name)
+		local track = tracks[name]
+		if name == "Chase" and not track then
+			track = tracks.Walk
+		end
+		if track == self.current then
+			return
+		end
+		if self.current then
+			self.current:Stop(0.2)
+		end
+		self.current = track
+		if track then
+			track:Play(0.2)
+		end
+	end
+
+	task.spawn(function()
+		while self.running and model.Parent do
+			local root = model.PrimaryPart
+			if root then
+				local velocity = root.AssemblyLinearVelocity
+				local speed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+				if speed < MOVING_THRESHOLD then
+					play("Idle")
+				elseif humanoid.WalkSpeed > chaseThreshold then
+					play("Chase")
+				else
+					play("Walk")
+				end
+			end
+			task.wait(POLL_INTERVAL)
+		end
+	end)
+
+	function self.destroy()
+		self.running = false
+		if self.current then
+			self.current:Stop()
+			self.current = nil
+		end
+	end
+
+	return self
+end
+
+return NpcAnimator
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "NpcBase",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	NpcBase (ModuleScript, ServerScriptService.BaldiGame.NpcBase)
+
+	Shared behaviour for all three characters: pathfinding locomotion,
+	roaming between waypoints, line-of-sight raycasts, stun/knockback
+	(BSODA) and slow (Frosty) effects, animation hookup, and reset
+	between rounds.
+
+	The three AIs only differ in WHAT triggers a new path and WHAT the
+	target is — that difference lives in ChatReviveAI / LpAI / FrostyAI;
+	everything mechanical lives here.
+]]
+
+local PathfindingService = game:GetService("PathfindingService")
+
+local NpcAnimator = require(script.Parent.NpcAnimator)
+
+local NpcBase = {}
+NpcBase.__index = NpcBase
+
+-- chaseAnimThreshold: WalkSpeed above which the rig's "Chase" animation
+-- plays (omit for characters that never chase).
+function NpcBase.new(ctx, model, spawnCFrame, chaseAnimThreshold)
+	local self = setmetatable({}, NpcBase)
+	self.ctx = ctx
+	self.model = model
+	self.humanoid = model:WaitForChild("Humanoid")
+	self.root = model:WaitForChild("HumanoidRootPart")
+	self.spawnCFrame = spawnCFrame
+
+	self.paused = true -- activation gating: frozen until the first notebook
+	self.stunnedUntil = 0
+	self.slowUntil = 0
+	self.slowMultiplier = 1
+	self.desiredSpeed = 0
+	self.rng = Random.new()
+
+	-- plays the Animations folder inside your rig, if present
+	self.animator = NpcAnimator.attach(model, chaseAnimThreshold)
+
+	-- raycast params for sight checks: ignore everything that isn't level
+	-- geometry or the player being checked
+	self.rayParams = RaycastParams.new()
+	self.rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	self.rayParams.FilterDescendantsInstances = {
+		ctx.map.npcFolder,
+		ctx.map.notebooksFolder,
+		ctx.map.pickupsFolder,
+		ctx.map.projectilesFolder,
+	}
+
+	model.PrimaryPart = self.root
+	model:PivotTo(spawnCFrame)
+
+	-- server owns NPC physics so AI movement is smooth and authoritative
+	task.defer(function()
+		pcall(function()
+			self.root:SetNetworkOwner(nil)
+		end)
+	end)
+
+	return self
+end
+
+-- ===================== state helpers =====================
+
+function NpcBase:isStunned()
+	return os.clock() < self.stunnedUntil
+end
+
+function NpcBase:isActive()
+	return (not self.paused) and (not self:isStunned()) and self.model.Parent ~= nil
+end
+
+function NpcBase:setPaused(paused)
+	self.paused = paused
+	if paused then
+		self:stop()
+	end
+end
+
+function NpcBase:resetToSpawn()
+	self.stunnedUntil = 0
+	self.slowUntil = 0
+	self.slowMultiplier = 1
+	self:setPaused(true)
+	local flash = self.model:FindFirstChild("StunFlash")
+	if flash then
+		flash:Destroy()
+	end
+	self.model:PivotTo(self.spawnCFrame)
+	self.root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+end
+
+function NpcBase:stop()
+	self.desiredSpeed = 0
+	self.humanoid.WalkSpeed = 0
+	self.humanoid:MoveTo(self.root.Position)
+end
+
+-- ===================== speed / debuffs =====================
+
+function NpcBase:applySpeed()
+	local multiplier = (os.clock() < self.slowUntil) and self.slowMultiplier or 1
+	self.humanoid.WalkSpeed = self.desiredSpeed * multiplier
+end
+
+function NpcBase:setMoveSpeed(speed)
+	self.desiredSpeed = speed
+	self:applySpeed()
+end
+
+-- Frosty's chill: also used on other NPCs when SLOWS_NPCS is on
+function NpcBase:applySlow(multiplier, duration)
+	self.slowMultiplier = multiplier
+	self.slowUntil = os.clock() + duration
+	self:applySpeed()
+	task.delay(duration + 0.05, function()
+		self:applySpeed()
+	end)
+end
+
+-- BSODA hit: knock back and freeze in place for a few seconds.
+-- The white flash is a Highlight, so it works on any rig (yours or the
+-- placeholder) without touching part colors.
+function NpcBase:stun(duration, pushDirection)
+	local cfg = self.ctx.config.BSODA_PROJECTILE
+	local alreadyStunned = self:isStunned()
+	self.stunnedUntil = os.clock() + duration
+	self.humanoid.WalkSpeed = 0
+	self.humanoid:MoveTo(self.root.Position)
+
+	if not alreadyStunned then
+		local flash = Instance.new("Highlight")
+		flash.Name = "StunFlash"
+		flash.FillColor = Color3.fromRGB(235, 235, 245)
+		flash.FillTransparency = 0.25
+		flash.OutlineTransparency = 0.6
+		flash.Parent = self.model
+		task.spawn(function()
+			while self:isStunned() do
+				task.wait(0.1)
+			end
+			flash:Destroy()
+			self:applySpeed()
+		end)
+	end
+
+	-- physics shove: constant velocity for PUSH_DURATION covers PUSH_STUDS
+	if pushDirection and pushDirection.Magnitude > 0.01 then
+		local flat = Vector3.new(pushDirection.X, 0, pushDirection.Z)
+		if flat.Magnitude > 0.01 then
+			local pushVelocity = flat.Unit * (cfg.PUSH_STUDS / cfg.PUSH_DURATION)
+			task.spawn(function()
+				local started = os.clock()
+				while os.clock() - started < cfg.PUSH_DURATION do
+					if not self.root.Parent then
+						return
+					end
+					self.root.AssemblyLinearVelocity = Vector3.new(pushVelocity.X, self.root.AssemblyLinearVelocity.Y, pushVelocity.Z)
+					task.wait()
+				end
+				self.root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+			end)
+		end
+	end
+end
+
+-- ===================== sight =====================
+
+-- True when there is a clear line of sight from this NPC to targetRoot.
+function NpcBase:canSee(targetRoot, maxDistance)
+	if not targetRoot or not targetRoot.Parent then
+		return false
+	end
+	local origin = self.root.Position + Vector3.new(0, 1.5, 0)
+	local delta = targetRoot.Position - origin
+	if delta.Magnitude > maxDistance then
+		return false
+	end
+	local result = workspace:Raycast(origin, delta, self.rayParams)
+	if result == nil then
+		return true
+	end
+	return result.Instance:IsDescendantOf(targetRoot.Parent)
+end
+
+-- ===================== pathfinding =====================
+
+function NpcBase:computePath(targetPosition)
+	local path = PathfindingService:CreatePath({
+		AgentRadius = 2.5,
+		AgentHeight = 6,
+		AgentCanJump = false,
+	})
+	local ok = pcall(function()
+		path:ComputeAsync(self.root.Position, targetPosition)
+	end)
+	if ok and path.Status == Enum.PathStatus.Success then
+		return path:GetWaypoints()
+	end
+	return nil
+end
+
+-- MoveTo a single point and wait until arrival / timeout / abort.
+function NpcBase:waitMoveTo(position, timeout, abortCheck)
+	if self.humanoid.Health <= 0 then
+		return false
+	end
+	local finished = false
+	local reached = false
+	local conn = self.humanoid.MoveToFinished:Connect(function(ok)
+		finished = true
+		reached = ok
+	end)
+	self.humanoid:MoveTo(position)
+	local started = os.clock()
+	while not finished do
+		if os.clock() - started > timeout then
+			break
+		end
+		if self.paused or self:isStunned() then
+			break
+		end
+		if abortCheck and abortCheck() then
+			break
+		end
+		task.wait(0.05)
+	end
+	conn:Disconnect()
+	return finished and reached
+end
+
+-- Full path-follow to a target position. Returns true if it got there.
+-- abortCheck() returning true bails out early (e.g. "I spotted a player").
+function NpcBase:travelTo(targetPosition, speed, abortCheck)
+	self:setMoveSpeed(speed)
+	local waypoints = self:computePath(targetPosition)
+	if not waypoints then
+		-- navmesh not ready or target unreachable: straight-line fallback
+		return self:waitMoveTo(targetPosition, 4, abortCheck)
+	end
+	for index = 2, #waypoints do
+		local waypoint = waypoints[index]
+		local distance = (waypoint.Position - self.root.Position).Magnitude
+		local timeout = distance / math.max(self.humanoid.WalkSpeed, 1) + 1.5
+		local ok = self:waitMoveTo(waypoint.Position, timeout, abortCheck)
+		if self.paused or self:isStunned() then
+			return false
+		end
+		if abortCheck and abortCheck() then
+			return false
+		end
+		if not ok then
+			return false
+		end
+	end
+	return true
+end
+
+-- One roam leg: pick a random waypoint part and walk to it.
+function NpcBase:roamStep(speed, abortCheck)
+	local nodes = self.ctx.map.waypointsFolder:GetChildren()
+	if #nodes == 0 then
+		task.wait(1)
+		return
+	end
+	local node = nodes[self.rng:NextInteger(1, #nodes)]
+	self:travelTo(node.Position, speed, abortCheck)
+end
+
+-- During a chase we re-path every REPATH_INTERVAL instead of walking the
+-- whole path; aim for the first waypoint a few studs ahead so motion stays
+-- smooth at chase speed.
+function NpcBase:chaseStepToward(goalPosition)
+	local waypoints = self:computePath(goalPosition)
+	local stepTarget = goalPosition
+	if waypoints then
+		for index = 2, #waypoints do
+			if (waypoints[index].Position - self.root.Position).Magnitude > 5 then
+				stepTarget = waypoints[index].Position
+				break
+			end
+		end
+	end
+	self.humanoid:MoveTo(stepTarget)
+end
+
+return NpcBase
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "NpcFactory",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	NpcFactory (ModuleScript, ServerScriptService.BaldiGame.NpcFactory)
+
+	Produces the character models the AIs drive.
+
+	If you made a rig (ReplicatedStorage/BaldiAssets/Npcs/<Name>, any rig
+	type, must contain a Humanoid + HumanoidRootPart, optional Animations
+	folder) it is cloned and prepared. Otherwise a simple placeholder rig
+	is built in code so the game runs before your characters exist.
+]]
+
+local AssetResolver = require(script.Parent.AssetResolver)
+
+local NpcFactory = {}
+
+-- ===================== placeholder rig =====================
+
+local function makeBodyPart(name, size, color, transparency)
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Size = size
+	part.Color = color
+	part.Material = Enum.Material.SmoothPlastic
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Transparency = transparency or 0
+	return part
+end
+
+local function joinParts(part0, part1, offset, jointName)
+	-- Position part1 relative to part0, then join with a Motor6D named per
+	-- the standard R6 convention so humanoid physics behaves normally.
+	part1.CFrame = part0.CFrame * offset
+	local motor = Instance.new("Motor6D")
+	motor.Name = jointName or "Weld"
+	motor.Part0 = part0
+	motor.Part1 = part1
+	motor.C0 = offset
+	motor.Parent = part0
+	return motor
+end
+
+local function buildPlaceholderRig(spec)
+	local model = Instance.new("Model")
+	model.Name = spec.name
+	model:SetAttribute("BaldiPlaceholderRig", true)
+
+	local hrp = makeBodyPart("HumanoidRootPart", Vector3.new(2, 2, 1), spec.bodyColor, 1)
+	hrp.CanCollide = false
+	hrp.CFrame = CFrame.new(0, 3, 0)
+	hrp.Parent = model
+
+	local torso = makeBodyPart("Torso", Vector3.new(2, 2, 1), spec.bodyColor, spec.transparency)
+	torso.Parent = model
+	joinParts(hrp, torso, CFrame.new(0, 0, 0), "RootJoint")
+
+	local head = makeBodyPart("Head", Vector3.new(1.4, 1.4, 1.4), spec.headColor, spec.transparency)
+	head.Shape = Enum.PartType.Ball
+	head.Parent = model
+	joinParts(torso, head, CFrame.new(0, 1.7, 0), "Neck")
+
+	local leftLeg = makeBodyPart("Left Leg", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
+	leftLeg.Parent = model
+	joinParts(torso, leftLeg, CFrame.new(-0.5, -2, 0), "Left Hip")
+	local rightLeg = makeBodyPart("Right Leg", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
+	rightLeg.Parent = model
+	joinParts(torso, rightLeg, CFrame.new(0.5, -2, 0), "Right Hip")
+
+	local leftArm = makeBodyPart("Left Arm", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
+	leftArm.CanCollide = false
+	leftArm.Parent = model
+	joinParts(torso, leftArm, CFrame.new(-1.5, 0, 0), "Left Shoulder")
+	local rightArm = makeBodyPart("Right Arm", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
+	rightArm.CanCollide = false
+	rightArm.Parent = model
+	joinParts(torso, rightArm, CFrame.new(1.5, 0, 0), "Right Shoulder")
+
+	-- simple face so the head has a "front"
+	local face = makeBodyPart("FaceMark", Vector3.new(0.5, 0.3, 0.2), Color3.new(0, 0, 0), spec.transparency)
+	face.CanCollide = false
+	face.CanQuery = false
+	face.Parent = model
+	joinParts(head, face, CFrame.new(0, 0.15, -0.65))
+
+	local humanoid = Instance.new("Humanoid")
+	humanoid.RigType = Enum.HumanoidRigType.R6
+	humanoid.Parent = model
+
+	if spec.glowColor then
+		local glow = Instance.new("PointLight")
+		glow.Color = spec.glowColor
+		glow.Range = 9
+		glow.Brightness = 1.2
+		glow.Parent = torso
+	end
+
+	model.PrimaryPart = hrp
+	return model
+end
+
+-- ===================== shared preparation =====================
+
+local function addNameTag(model, spec)
+	-- only when the rig doesn't already carry its own name display
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BillboardGui") then
+			return
+		end
+	end
+	local target = model:FindFirstChild("Head") or model.PrimaryPart
+	if not target then
+		return
+	end
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "NameTag"
+	billboard.Size = UDim2.new(0, 130, 0, 30)
+	billboard.StudsOffset = Vector3.new(0, 2.6, 0)
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 90
+	billboard.Parent = target
+	local tag = Instance.new("TextLabel")
+	tag.Size = UDim2.fromScale(1, 1)
+	tag.BackgroundTransparency = 1
+	tag.Font = Enum.Font.Cartoon
+	tag.TextScaled = true
+	tag.TextColor3 = spec.tagColor or Color3.new(1, 1, 1)
+	tag.TextStrokeTransparency = 0.2
+	tag.Text = spec.name
+	tag.Parent = billboard
+end
+
+-- spec = { name, bodyColor, headColor, transparency?, glowColor?, tagColor? }
+-- (the color fields style the placeholder only; your rig is used as-is)
+function NpcFactory.create(spec, parent)
+	local template = AssetResolver.npcTemplate(spec.name)
+	local model
+	if template then
+		model = template:Clone()
+		model.Name = spec.name
+		for _, descendant in ipairs(model:GetDescendants()) do
+			-- never run scripts that came bundled with an imported asset
+			if descendant:IsA("BaseScript") or descendant:IsA("ModuleScript") then
+				descendant:Destroy()
+			elseif descendant:IsA("BasePart") then
+				descendant.Anchored = false
+			end
+		end
+		model.PrimaryPart = model:FindFirstChild("HumanoidRootPart")
+	else
+		model = buildPlaceholderRig(spec)
+	end
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	pcall(function()
+		humanoid.JumpHeight = 0
+	end)
+	humanoid.MaxHealth = 100000
+	humanoid.Health = humanoid.MaxHealth
+	humanoid.RequiresNeck = false
+	humanoid.AutoRotate = true
+	humanoid.BreakJointsOnDeath = false
+	humanoid.DisplayName = spec.name
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+
+	addNameTag(model, spec)
+
+	-- keep NPCs out of the player collision group
+	for _, part in ipairs(model:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.CollisionGroup = "BaldiNpc"
+		end
+	end
+
+	model.Parent = parent
+
+	-- BSODA knockback should shove, not ragdoll
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
+
+	return model
+end
+
+return NpcFactory
+]=====],
+	},
+	{
+		root = "ServerScriptService",
+		folders = { "BaldiGame" },
+		name = "PlaceholderMap",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	PlaceholderMap (ModuleScript, ServerScriptService.BaldiGame.PlaceholderMap)
+
+	Generates a complete stand-in school so the game is playable before
+	your real map exists. It produces EXACTLY the folder contract that
+	MapResolver reads — build your own Workspace/BaldiMap with the same
+	structure and this module is never used:
+
+	  BaldiMap
+	  ├── Geometry        (walls, floors, furniture, ExitDoor, LobbySpawn,
+	  │                    VendingMachine_BSODA, VendingMachine_ZESTY)
+	  ├── Markers         (RoundSpawn, DetentionSpot, ChatReviveSpawn,
+	  │                    LpSpawn, FrostySpawn — invisible parts)
+	  ├── Waypoints       (invisible parts the NPCs roam between)
+	  ├── NotebookSpawns  (invisible parts; 10 are picked per round)
+	  ├── NickelSpawns    (invisible parts; starter coins)
+	  └── ItemSpawns      (invisible parts named BSODA / ZESTY)
 
 	Layout (top-down, studs). Floor top sits at Y = 0.
 	  School rectangle: X -96..96, Z -72..72
@@ -1706,11 +2974,9 @@ return LpAI
 	  Entrance corridor X -6..6, Z -72..-48 with the EXIT door at Z -72
 ]]
 
-local CollectionService = game:GetService("CollectionService")
-local PhysicsService = game:GetService("PhysicsService")
 local Lighting = game:GetService("Lighting")
 
-local MapBuilder = {}
+local PlaceholderMap = {}
 
 local WALL_HEIGHT = 14
 local WALL_THICKNESS = 1
@@ -1739,11 +3005,11 @@ local function basePart(props)
 	return part
 end
 
-local function makeInvisibleNode(name, position, parent)
+local function invisibleNode(name, cframe, parent)
 	local part = basePart({
 		Name = name,
 		Size = Vector3.new(1, 1, 1),
-		CFrame = CFrame.new(position),
+		CFrame = cframe,
 		Transparency = 1,
 		CanCollide = false,
 		CanQuery = false,
@@ -1766,7 +3032,7 @@ local function surfaceText(part, face, text, textColor, bgColor)
 	if bgColor then
 		label.BackgroundColor3 = bgColor
 	end
-	label.Font = Enum.Font.GothamBold
+	label.Font = Enum.Font.Cartoon
 	label.TextScaled = true
 	label.TextColor3 = textColor or Color3.new(1, 1, 1)
 	label.Text = text
@@ -1784,7 +3050,6 @@ local function buildWall(parent, x1, z1, x2, z2, gaps)
 	local from = horizontal and math.min(x1, x2) or math.min(z1, z2)
 	local to = horizontal and math.max(x1, x2) or math.max(z1, z2)
 
-	-- collect cut points, sorted
 	local cuts = {}
 	for _, gap in ipairs(gaps) do
 		table.insert(cuts, { lo = gap.center - gap.width / 2, hi = gap.center + gap.width / 2 })
@@ -1883,6 +3148,8 @@ local function buildLight(parent, x, z)
 	fixture.Parent = parent
 end
 
+-- Plain machine body; MapResolver attaches the ProximityPrompt (same path
+-- it uses for hand-built machines).
 local function buildVendingMachine(parent, x, z, itemDef)
 	local machine = basePart({
 		Name = "VendingMachine_" .. itemDef.id,
@@ -1893,64 +3160,33 @@ local function buildVendingMachine(parent, x, z, itemDef)
 	})
 	surfaceText(machine, Enum.NormalId.Front, itemDef.displayName, Color3.new(1, 1, 1), Color3.fromRGB(30, 30, 35))
 	surfaceText(machine, Enum.NormalId.Back, itemDef.displayName, Color3.new(1, 1, 1), Color3.fromRGB(30, 30, 35))
-
-	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Browse"
-	prompt.ObjectText = itemDef.displayName .. " Machine"
-	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = 5
-	prompt.RequiresLineOfSight = false
-	prompt.Parent = machine
-
 	machine.Parent = parent
-	return machine, prompt
 end
 
 -- ===================== main build =====================
 
-function MapBuilder.build(ctx)
-	local config = ctx.config
-
-	-- Collision groups: players never physically collide with NPCs, so a
-	-- roaming character can never wedge a player into a doorway.
-	pcall(function()
-		PhysicsService:RegisterCollisionGroup("BaldiNpc")
-		PhysicsService:RegisterCollisionGroup("BaldiPlayer")
-		PhysicsService:CollisionGroupSetCollidable("BaldiNpc", "BaldiPlayer", false)
-	end)
-
-	local existing = workspace:FindFirstChild("BaldiMap")
-	if existing then
-		-- A hand-built map is present; just make sure runtime folders exist.
-		local map = MapBuilder.collectExistingMap(existing)
-		ctx.map = map
-		return map
-	end
-
+function PlaceholderMap.generate(config)
 	local root = Instance.new("Folder")
 	root.Name = "BaldiMap"
 
 	local geometry = Instance.new("Folder")
 	geometry.Name = "Geometry"
 	geometry.Parent = root
+	local markers = Instance.new("Folder")
+	markers.Name = "Markers"
+	markers.Parent = root
 	local waypoints = Instance.new("Folder")
 	waypoints.Name = "Waypoints"
 	waypoints.Parent = root
 	local spawnNodes = Instance.new("Folder")
 	spawnNodes.Name = "NotebookSpawns"
 	spawnNodes.Parent = root
-	local notebooks = Instance.new("Folder")
-	notebooks.Name = "Notebooks"
-	notebooks.Parent = root
-	local pickups = Instance.new("Folder")
-	pickups.Name = "Pickups"
-	pickups.Parent = root
-	local npcFolder = Instance.new("Folder")
-	npcFolder.Name = "Npcs"
-	npcFolder.Parent = root
-	local projectiles = Instance.new("Folder")
-	projectiles.Name = "Projectiles"
-	projectiles.Parent = root
+	local nickelSpawns = Instance.new("Folder")
+	nickelSpawns.Name = "NickelSpawns"
+	nickelSpawns.Parent = root
+	local itemSpawns = Instance.new("Folder")
+	itemSpawns.Name = "ItemSpawns"
+	itemSpawns.Parent = root
 
 	-- ---------- floor & ceiling ----------
 	local floor = basePart({
@@ -2112,11 +3348,15 @@ function MapBuilder.build(ctx)
 	Lighting.Brightness = 2
 
 	-- ---------- vending machines (south hall, against the central block) ----------
-	local vendingMachines = {}
-	local bsodaMachine, bsodaPrompt = buildVendingMachine(geometry, -16, 38.2, config.ITEMS.BSODA)
-	local zestyMachine, zestyPrompt = buildVendingMachine(geometry, 16, 38.2, config.ITEMS.ZESTY)
-	table.insert(vendingMachines, { part = bsodaMachine, prompt = bsodaPrompt, itemId = "BSODA" })
-	table.insert(vendingMachines, { part = zestyMachine, prompt = zestyPrompt, itemId = "ZESTY" })
+	buildVendingMachine(geometry, -16, 38.2, config.ITEMS.BSODA)
+	buildVendingMachine(geometry, 16, 38.2, config.ITEMS.ZESTY)
+
+	-- ---------- markers (the contract MapResolver reads) ----------
+	invisibleNode("RoundSpawn", CFrame.lookAt(Vector3.new(0, 1, -58), Vector3.new(0, 1, -30)), markers)
+	invisibleNode("DetentionSpot", CFrame.lookAt(Vector3.new(0, 1, -24), Vector3.new(0, 1, -36)), markers)
+	invisibleNode("ChatReviveSpawn", CFrame.new(90, 1, 0), markers) -- library east end
+	invisibleNode("LpSpawn", CFrame.new(-75, 1, 0), markers) -- gym center
+	invisibleNode("FrostySpawn", CFrame.new(0, 1, 42), markers) -- south hall
 
 	-- ---------- AI waypoints ----------
 	local waypointSpots = {
@@ -2129,7 +3369,7 @@ function MapBuilder.build(ctx)
 		{ 0, -60 }, -- entrance corridor
 	}
 	for index, spot in ipairs(waypointSpots) do
-		makeInvisibleNode("Waypoint" .. index, Vector3.new(spot[1], 1, spot[2]), waypoints)
+		invisibleNode("Waypoint" .. index, CFrame.new(spot[1], 1, spot[2]), waypoints)
 	end
 
 	-- ---------- notebook spawn nodes (23 total, 10 picked per round) ----------
@@ -2150,9 +3390,16 @@ function MapBuilder.build(ctx)
 		{ -50, -44 }, { 50, -44 }, { -50, 44 }, { 50, 44 },
 	}
 	for index, spot in ipairs(nodeSpots) do
-		local node = makeInvisibleNode("NotebookSpawn" .. index, Vector3.new(spot[1], 1.5, spot[2]), spawnNodes)
-		CollectionService:AddTag(node, "NotebookSpawn")
+		invisibleNode("NotebookSpawn" .. index, CFrame.new(spot[1], 1.5, spot[2]), spawnNodes)
 	end
+
+	-- ---------- nickel / item spawn points ----------
+	local nickelSpots = { { -30, -42 }, { 30, 42 }, { 48, 0 }, { -48, 20 } }
+	for index, spot in ipairs(nickelSpots) do
+		invisibleNode("NickelSpawn" .. index, CFrame.new(spot[1], 1.5, spot[2]), nickelSpawns)
+	end
+	invisibleNode("BSODA", CFrame.new(-22, 1.5, -60), itemSpawns) -- classroom A
+	invisibleNode("ZESTY", CFrame.new(18, 1.5, 60), itemSpawns) -- classroom D
 
 	-- ---------- lobby (menu area, away from the school) ----------
 	local lobbyFloor = basePart({
@@ -2189,693 +3436,10 @@ function MapBuilder.build(ctx)
 	spawnLocation.Parent = geometry
 
 	root.Parent = workspace
-
-	ctx.map = {
-		root = root,
-		geometry = geometry,
-		waypointsFolder = waypoints,
-		spawnNodesFolder = spawnNodes,
-		notebooksFolder = notebooks,
-		pickupsFolder = pickups,
-		npcFolder = npcFolder,
-		projectilesFolder = projectiles,
-		exitDoor = exitDoor,
-		lobbySpawn = spawnLocation,
-		-- players start a round at the entrance corridor, facing the school
-		roundSpawnCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -58), Vector3.new(0, 3.5, -30)),
-		detentionCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -24), Vector3.new(0, 3.5, -36)),
-		vendingMachines = vendingMachines,
-		npcSpawns = {
-			CHATREVIVE = CFrame.new(90, 3, 0), -- library east end, behind the shelves
-			LP = CFrame.new(-75, 3, 0), -- gym center
-			FROSTY = CFrame.new(0, 3, 42), -- south hall
-		},
-		nickelSpawns = {
-			Vector3.new(-30, 1.5, -42), Vector3.new(30, 1.5, 42),
-			Vector3.new(48, 1.5, 0), Vector3.new(-48, 1.5, 20),
-		},
-		itemSpawns = {
-			BSODA = Vector3.new(-22, 1.5, -60), -- classroom A
-			ZESTY = Vector3.new(18, 1.5, 60), -- classroom D
-		},
-	}
-	return ctx.map
+	return root
 end
 
--- Used when a hand-built BaldiMap folder already exists in Workspace.
--- Expects the same child folder names; creates missing runtime folders.
-function MapBuilder.collectExistingMap(root)
-	local function ensureFolder(name)
-		local folder = root:FindFirstChild(name)
-		if not folder then
-			folder = Instance.new("Folder")
-			folder.Name = name
-			folder.Parent = root
-		end
-		return folder
-	end
-
-	local geometry = ensureFolder("Geometry")
-	local map = {
-		root = root,
-		geometry = geometry,
-		waypointsFolder = ensureFolder("Waypoints"),
-		spawnNodesFolder = ensureFolder("NotebookSpawns"),
-		notebooksFolder = ensureFolder("Notebooks"),
-		pickupsFolder = ensureFolder("Pickups"),
-		npcFolder = ensureFolder("Npcs"),
-		projectilesFolder = ensureFolder("Projectiles"),
-		exitDoor = geometry:FindFirstChild("ExitDoor", true),
-		lobbySpawn = geometry:FindFirstChild("LobbySpawn", true),
-		roundSpawnCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -58), Vector3.new(0, 3.5, -30)),
-		detentionCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -24), Vector3.new(0, 3.5, -36)),
-		vendingMachines = {},
-		npcSpawns = {
-			CHATREVIVE = CFrame.new(90, 3, 0),
-			LP = CFrame.new(-75, 3, 0),
-			FROSTY = CFrame.new(0, 3, 42),
-		},
-		nickelSpawns = { Vector3.new(-30, 1.5, -42), Vector3.new(30, 1.5, 42) },
-		itemSpawns = {},
-	}
-	for _, child in ipairs(geometry:GetDescendants()) do
-		if child:IsA("BasePart") and child.Name:match("^VendingMachine_") then
-			local itemId = child.Name:gsub("^VendingMachine_", "")
-			local prompt = child:FindFirstChildOfClass("ProximityPrompt")
-			if prompt then
-				table.insert(map.vendingMachines, { part = child, prompt = prompt, itemId = itemId })
-			end
-		end
-	end
-	return map
-end
-
-return MapBuilder
-]=====],
-	},
-	{
-		root = "ServerScriptService",
-		folders = { "BaldiGame" },
-		name = "NotebookSpawner",
-		class = "ModuleScript",
-		source = [=====[
---[[
-	NotebookSpawner (ModuleScript, ServerScriptService.BaldiGame.NotebookSpawner)
-
-	Random notebook generation, exactly per the plan:
-	  1. MapBuilder placed ~23 invisible nodes tagged "NotebookSpawn"
-	     (any parts you tag yourself in Studio are included too).
-	  2. CollectionService:GetTagged("NotebookSpawn") collects them.
-	  3. Fisher-Yates shuffle, take the first NOTEBOOK_SPAWN_COUNT (10).
-	  4. Clone the Notebook model (built in code into ReplicatedStorage)
-	     at each chosen node.
-	  5. ProximityPrompt collect -> destroy model, bump the server counter,
-	     fire NotebookCollected to all clients.
-
-	Also runs a tiny spin/bob animation so notebooks read as pickups.
-]]
-
-local CollectionService = game:GetService("CollectionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-
-local NotebookSpawner = {}
-
-local function buildNotebookTemplate()
-	local folder = ReplicatedStorage:FindFirstChild("BaldiModels")
-	if not folder then
-		folder = Instance.new("Folder")
-		folder.Name = "BaldiModels"
-		folder.Parent = ReplicatedStorage
-	end
-	local existing = folder:FindFirstChild("Notebook")
-	if existing then
-		return existing
-	end
-
-	local model = Instance.new("Model")
-	model.Name = "Notebook"
-
-	local cover = Instance.new("Part")
-	cover.Name = "Cover"
-	cover.Size = Vector3.new(1.7, 0.35, 2.2)
-	cover.Color = Color3.fromRGB(200, 40, 40)
-	cover.Material = Enum.Material.SmoothPlastic
-	cover.Anchored = true
-	cover.CanCollide = false
-	cover.CanQuery = false
-	cover.TopSurface = Enum.SurfaceType.Smooth
-	cover.BottomSurface = Enum.SurfaceType.Smooth
-	cover.Parent = model
-
-	local pages = Instance.new("Part")
-	pages.Name = "Pages"
-	pages.Size = Vector3.new(1.5, 0.12, 2)
-	pages.Color = Color3.fromRGB(245, 245, 235)
-	pages.Material = Enum.Material.SmoothPlastic
-	pages.Anchored = true
-	pages.CanCollide = false
-	pages.CanQuery = false
-	pages.CFrame = cover.CFrame * CFrame.new(0, 0.23, 0)
-	pages.Parent = model
-
-	model.PrimaryPart = cover
-	model.Parent = folder
-	return model
-end
-
-function NotebookSpawner.init(ctx)
-	local self = {}
-	local template = buildNotebookTemplate()
-	local active = {} -- [model] = { base = CFrame, phase = number }
-	local rng = Random.new()
-
-	-- spin & bob
-	local elapsed = 0
-	RunService.Heartbeat:Connect(function(dt)
-		elapsed = elapsed + dt
-		for model, info in pairs(active) do
-			if model.Parent then
-				local yaw = CFrame.Angles(0, elapsed * 1.6 + info.phase, 0)
-				local bob = Vector3.new(0, math.sin(elapsed * 2 + info.phase) * 0.2, 0)
-				model:PivotTo(info.base * yaw + bob)
-			end
-		end
-	end)
-
-	function self.clear()
-		for model in pairs(active) do
-			active[model] = nil
-			if model.Parent then
-				model:Destroy()
-			end
-		end
-		ctx.map.notebooksFolder:ClearAllChildren()
-	end
-
-	function self.remainingCount()
-		local count = 0
-		for model in pairs(active) do
-			if model.Parent then
-				count = count + 1
-			end
-		end
-		return count
-	end
-
-	-- Returns how many notebooks were actually placed this round.
-	function self.spawnForRound()
-		self.clear()
-
-		-- 2. collect every tagged node (built ones + any you added in Studio)
-		local nodes = {}
-		for _, node in ipairs(CollectionService:GetTagged("NotebookSpawn")) do
-			if node:IsDescendantOf(workspace) then
-				table.insert(nodes, node)
-			end
-		end
-
-		-- 3. Fisher-Yates shuffle, no duplicates possible
-		for index = #nodes, 2, -1 do
-			local swap = rng:NextInteger(1, index)
-			nodes[index], nodes[swap] = nodes[swap], nodes[index]
-		end
-
-		local count = math.min(ctx.config.NOTEBOOK_SPAWN_COUNT, #nodes)
-		for index = 1, count do
-			local node = nodes[index]
-
-			-- 4. clone and position at the node
-			local notebook = template:Clone()
-			local baseCFrame = CFrame.new(node.Position + Vector3.new(0, 0.8, 0))
-				* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
-			notebook:PivotTo(baseCFrame)
-
-			-- 5. collect interaction
-			local prompt = Instance.new("ProximityPrompt")
-			prompt.ActionText = "Collect"
-			prompt.ObjectText = "Notebook"
-			prompt.HoldDuration = 0
-			prompt.MaxActivationDistance = ctx.config.NOTEBOOK_PROMPT_DISTANCE
-			prompt.RequiresLineOfSight = false
-			prompt.Parent = notebook.PrimaryPart
-
-			prompt.Triggered:Connect(function(player)
-				if not active[notebook] then
-					return -- already collected
-				end
-				if not ctx.manager.isRoundActive() or not ctx.manager.isParticipant(player) then
-					return
-				end
-				active[notebook] = nil
-				notebook:Destroy()
-				ctx.manager.onNotebookCollected(player)
-			end)
-
-			notebook.Parent = ctx.map.notebooksFolder
-			active[notebook] = { base = baseCFrame, phase = rng:NextNumber(0, math.pi * 2) }
-		end
-
-		return count
-	end
-
-	ctx.notebookSpawner = self
-	return self
-end
-
-return NotebookSpawner
-]=====],
-	},
-	{
-		root = "ServerScriptService",
-		folders = { "BaldiGame" },
-		name = "NpcBase",
-		class = "ModuleScript",
-		source = [=====[
---[[
-	NpcBase (ModuleScript, ServerScriptService.BaldiGame.NpcBase)
-
-	Shared behaviour for all three characters: pathfinding locomotion,
-	roaming between waypoints, line-of-sight raycasts, stun/knockback
-	(BSODA) and slow (Frosty) effects, and reset between rounds.
-
-	Per the plan, the three AIs only differ in WHAT triggers a new path and
-	WHAT the target is — that difference lives in ChatReviveAI / LpAI /
-	FrostyAI; everything mechanical lives here.
-]]
-
-local PathfindingService = game:GetService("PathfindingService")
-
-local NpcBase = {}
-NpcBase.__index = NpcBase
-
-function NpcBase.new(ctx, model, spawnCFrame)
-	local self = setmetatable({}, NpcBase)
-	self.ctx = ctx
-	self.model = model
-	self.humanoid = model:WaitForChild("Humanoid")
-	self.root = model:WaitForChild("HumanoidRootPart")
-	self.spawnCFrame = spawnCFrame
-
-	self.paused = true -- activation gating: frozen until the first notebook
-	self.stunnedUntil = 0
-	self.slowUntil = 0
-	self.slowMultiplier = 1
-	self.desiredSpeed = 0
-	self.rng = Random.new()
-
-	-- raycast params for sight checks: ignore everything that isn't level
-	-- geometry or the player being checked
-	self.rayParams = RaycastParams.new()
-	self.rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	self.rayParams.FilterDescendantsInstances = {
-		ctx.map.npcFolder,
-		ctx.map.notebooksFolder,
-		ctx.map.pickupsFolder,
-		ctx.map.projectilesFolder,
-	}
-
-	model.PrimaryPart = self.root
-	model:PivotTo(spawnCFrame)
-
-	-- server owns NPC physics so AI movement is smooth and authoritative
-	task.defer(function()
-		pcall(function()
-			self.root:SetNetworkOwner(nil)
-		end)
-	end)
-
-	return self
-end
-
--- ===================== state helpers =====================
-
-function NpcBase:isStunned()
-	return os.clock() < self.stunnedUntil
-end
-
-function NpcBase:isActive()
-	return (not self.paused) and (not self:isStunned()) and self.model.Parent ~= nil
-end
-
-function NpcBase:setPaused(paused)
-	self.paused = paused
-	if paused then
-		self:stop()
-	end
-end
-
-function NpcBase:resetToSpawn()
-	self.stunnedUntil = 0
-	self.slowUntil = 0
-	self.slowMultiplier = 1
-	self:setPaused(true)
-	self.model:PivotTo(self.spawnCFrame)
-	self.root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-end
-
-function NpcBase:stop()
-	self.desiredSpeed = 0
-	self.humanoid.WalkSpeed = 0
-	self.humanoid:MoveTo(self.root.Position)
-end
-
--- ===================== speed / debuffs =====================
-
-function NpcBase:applySpeed()
-	local multiplier = (os.clock() < self.slowUntil) and self.slowMultiplier or 1
-	self.humanoid.WalkSpeed = self.desiredSpeed * multiplier
-end
-
-function NpcBase:setMoveSpeed(speed)
-	self.desiredSpeed = speed
-	self:applySpeed()
-end
-
--- Frosty's chill: also used on other NPCs when SLOWS_NPCS is on
-function NpcBase:applySlow(multiplier, duration)
-	self.slowMultiplier = multiplier
-	self.slowUntil = os.clock() + duration
-	self:applySpeed()
-	task.delay(duration + 0.05, function()
-		self:applySpeed()
-	end)
-end
-
--- BSODA hit: knock back and freeze in place for a few seconds
-function NpcBase:stun(duration, pushDirection)
-	local cfg = self.ctx.config.BSODA_PROJECTILE
-	local alreadyStunned = self:isStunned()
-	self.stunnedUntil = os.clock() + duration
-	self.humanoid.WalkSpeed = 0
-	self.humanoid:MoveTo(self.root.Position)
-
-	-- white flash while stunned; a second hit while flashed must not capture
-	-- the flash color as the "original", so only the first hit manages colors
-	if not alreadyStunned then
-		local originalColors = {}
-		for _, part in ipairs(self.model:GetChildren()) do
-			if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-				originalColors[part] = part.Color
-				part.Color = Color3.fromRGB(230, 230, 240)
-			end
-		end
-		task.spawn(function()
-			while self:isStunned() do
-				task.wait(0.1)
-			end
-			for part, color in pairs(originalColors) do
-				if part.Parent then
-					part.Color = color
-				end
-			end
-			self:applySpeed()
-		end)
-	end
-
-	-- physics shove: constant velocity for PUSH_DURATION covers PUSH_STUDS
-	if pushDirection and pushDirection.Magnitude > 0.01 then
-		local flat = Vector3.new(pushDirection.X, 0, pushDirection.Z)
-		if flat.Magnitude > 0.01 then
-			local pushVelocity = flat.Unit * (cfg.PUSH_STUDS / cfg.PUSH_DURATION)
-			task.spawn(function()
-				local started = os.clock()
-				while os.clock() - started < cfg.PUSH_DURATION do
-					if not self.root.Parent then
-						return
-					end
-					self.root.AssemblyLinearVelocity = Vector3.new(pushVelocity.X, self.root.AssemblyLinearVelocity.Y, pushVelocity.Z)
-					task.wait()
-				end
-				self.root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-			end)
-		end
-	end
-end
-
--- ===================== sight =====================
-
--- True when there is a clear line of sight from this NPC to targetRoot.
-function NpcBase:canSee(targetRoot, maxDistance)
-	if not targetRoot or not targetRoot.Parent then
-		return false
-	end
-	local origin = self.root.Position + Vector3.new(0, 1.5, 0)
-	local delta = targetRoot.Position - origin
-	if delta.Magnitude > maxDistance then
-		return false
-	end
-	local result = workspace:Raycast(origin, delta, self.rayParams)
-	if result == nil then
-		return true
-	end
-	return result.Instance:IsDescendantOf(targetRoot.Parent)
-end
-
--- ===================== pathfinding =====================
-
-function NpcBase:computePath(targetPosition)
-	local path = PathfindingService:CreatePath({
-		AgentRadius = 2.5,
-		AgentHeight = 6,
-		AgentCanJump = false,
-	})
-	local ok = pcall(function()
-		path:ComputeAsync(self.root.Position, targetPosition)
-	end)
-	if ok and path.Status == Enum.PathStatus.Success then
-		return path:GetWaypoints()
-	end
-	return nil
-end
-
--- MoveTo a single point and wait until arrival / timeout / abort.
-function NpcBase:waitMoveTo(position, timeout, abortCheck)
-	if self.humanoid.Health <= 0 then
-		return false
-	end
-	local finished = false
-	local reached = false
-	local conn = self.humanoid.MoveToFinished:Connect(function(ok)
-		finished = true
-		reached = ok
-	end)
-	self.humanoid:MoveTo(position)
-	local started = os.clock()
-	while not finished do
-		if os.clock() - started > timeout then
-			break
-		end
-		if self.paused or self:isStunned() then
-			break
-		end
-		if abortCheck and abortCheck() then
-			break
-		end
-		task.wait(0.05)
-	end
-	conn:Disconnect()
-	return finished and reached
-end
-
--- Full path-follow to a target position. Returns true if it got there.
--- abortCheck() returning true bails out early (e.g. "I spotted a player").
-function NpcBase:travelTo(targetPosition, speed, abortCheck)
-	self:setMoveSpeed(speed)
-	local waypoints = self:computePath(targetPosition)
-	if not waypoints then
-		-- navmesh not ready or target unreachable: straight-line fallback
-		return self:waitMoveTo(targetPosition, 4, abortCheck)
-	end
-	for index = 2, #waypoints do
-		local waypoint = waypoints[index]
-		local distance = (waypoint.Position - self.root.Position).Magnitude
-		local timeout = distance / math.max(self.humanoid.WalkSpeed, 1) + 1.5
-		local ok = self:waitMoveTo(waypoint.Position, timeout, abortCheck)
-		if self.paused or self:isStunned() then
-			return false
-		end
-		if abortCheck and abortCheck() then
-			return false
-		end
-		if not ok then
-			return false
-		end
-	end
-	return true
-end
-
--- One roam leg: pick a random waypoint part and walk to it.
-function NpcBase:roamStep(speed, abortCheck)
-	local nodes = self.ctx.map.waypointsFolder:GetChildren()
-	if #nodes == 0 then
-		task.wait(1)
-		return
-	end
-	local node = nodes[self.rng:NextInteger(1, #nodes)]
-	self:travelTo(node.Position, speed, abortCheck)
-end
-
--- During a chase we re-path every REPATH_INTERVAL instead of walking the
--- whole path; aim for the first waypoint a few studs ahead so motion stays
--- smooth at chase speed.
-function NpcBase:chaseStepToward(goalPosition)
-	local waypoints = self:computePath(goalPosition)
-	local stepTarget = goalPosition
-	if waypoints then
-		for index = 2, #waypoints do
-			if (waypoints[index].Position - self.root.Position).Magnitude > 5 then
-				stepTarget = waypoints[index].Position
-				break
-			end
-		end
-	end
-	self.humanoid:MoveTo(stepTarget)
-end
-
-return NpcBase
-]=====],
-	},
-	{
-		root = "ServerScriptService",
-		folders = { "BaldiGame" },
-		name = "NpcFactory",
-		class = "ModuleScript",
-		source = [=====[
---[[
-	NpcFactory (ModuleScript, ServerScriptService.BaldiGame.NpcFactory)
-	Builds simple R6 humanoid rigs entirely in code (no asset uploads needed),
-	with a floating name tag so testers can tell the characters apart.
-]]
-
-local NpcFactory = {}
-
-local function makeBodyPart(name, size, color, transparency)
-	local part = Instance.new("Part")
-	part.Name = name
-	part.Size = size
-	part.Color = color
-	part.Material = Enum.Material.SmoothPlastic
-	part.TopSurface = Enum.SurfaceType.Smooth
-	part.BottomSurface = Enum.SurfaceType.Smooth
-	part.Transparency = transparency or 0
-	return part
-end
-
-local function joinParts(part0, part1, offset, jointName)
-	-- Position part1 relative to part0, then join with a Motor6D named per
-	-- the standard R6 convention so humanoid physics behaves normally.
-	part1.CFrame = part0.CFrame * offset
-	local motor = Instance.new("Motor6D")
-	motor.Name = jointName or "Weld"
-	motor.Part0 = part0
-	motor.Part1 = part1
-	motor.C0 = offset
-	motor.Parent = part0
-	return motor
-end
-
--- spec = { name, bodyColor, headColor, transparency?, glowColor? }
-function NpcFactory.createRig(spec, parent)
-	local model = Instance.new("Model")
-	model.Name = spec.name
-
-	local hrp = makeBodyPart("HumanoidRootPart", Vector3.new(2, 2, 1), spec.bodyColor, 1)
-	hrp.CanCollide = false
-	hrp.CFrame = CFrame.new(0, 3, 0)
-	hrp.Parent = model
-
-	local torso = makeBodyPart("Torso", Vector3.new(2, 2, 1), spec.bodyColor, spec.transparency)
-	torso.Parent = model
-	joinParts(hrp, torso, CFrame.new(0, 0, 0), "RootJoint")
-
-	local head = makeBodyPart("Head", Vector3.new(1.4, 1.4, 1.4), spec.headColor, spec.transparency)
-	head.Shape = Enum.PartType.Ball
-	head.Parent = model
-	joinParts(torso, head, CFrame.new(0, 1.7, 0), "Neck")
-
-	local leftLeg = makeBodyPart("Left Leg", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
-	leftLeg.Parent = model
-	joinParts(torso, leftLeg, CFrame.new(-0.5, -2, 0), "Left Hip")
-	local rightLeg = makeBodyPart("Right Leg", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
-	rightLeg.Parent = model
-	joinParts(torso, rightLeg, CFrame.new(0.5, -2, 0), "Right Hip")
-
-	local leftArm = makeBodyPart("Left Arm", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
-	leftArm.CanCollide = false
-	leftArm.Parent = model
-	joinParts(torso, leftArm, CFrame.new(-1.5, 0, 0), "Left Shoulder")
-	local rightArm = makeBodyPart("Right Arm", Vector3.new(1, 2, 1), spec.bodyColor, spec.transparency)
-	rightArm.CanCollide = false
-	rightArm.Parent = model
-	joinParts(torso, rightArm, CFrame.new(1.5, 0, 0), "Right Shoulder")
-
-	-- simple face so the head has a "front"
-	local face = makeBodyPart("FaceMark", Vector3.new(0.5, 0.3, 0.2), Color3.new(0, 0, 0), spec.transparency)
-	face.CanCollide = false
-	face.CanQuery = false
-	face.Parent = model
-	joinParts(head, face, CFrame.new(0, 0.15, -0.65))
-
-	local humanoid = Instance.new("Humanoid")
-	humanoid.RigType = Enum.HumanoidRigType.R6
-	humanoid.MaxHealth = 100000
-	humanoid.Health = 100000
-	humanoid.RequiresNeck = false
-	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
-	humanoid.AutoRotate = true
-	humanoid.DisplayName = spec.name
-	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-	humanoid.Parent = model
-
-	-- name tag
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "NameTag"
-	billboard.Size = UDim2.new(0, 130, 0, 30)
-	billboard.StudsOffset = Vector3.new(0, 2.6, 0)
-	billboard.AlwaysOnTop = false
-	billboard.MaxDistance = 90
-	billboard.Parent = head
-	local tag = Instance.new("TextLabel")
-	tag.Size = UDim2.fromScale(1, 1)
-	tag.BackgroundTransparency = 1
-	tag.Font = Enum.Font.GothamBold
-	tag.TextScaled = true
-	tag.TextColor3 = spec.tagColor or Color3.new(1, 1, 1)
-	tag.TextStrokeTransparency = 0.2
-	tag.Text = spec.name
-	tag.Parent = billboard
-
-	if spec.glowColor then
-		local glow = Instance.new("PointLight")
-		glow.Color = spec.glowColor
-		glow.Range = 9
-		glow.Brightness = 1.2
-		glow.Parent = torso
-	end
-
-	model.PrimaryPart = hrp
-
-	-- keep NPCs out of the player collision group
-	for _, part in ipairs(model:GetDescendants()) do
-		if part:IsA("BasePart") then
-			part.CollisionGroup = "BaldiNpc"
-		end
-	end
-
-	model.Parent = parent
-
-	-- BSODA knockback should shove, not ragdoll
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
-
-	return model
-end
-
-return NpcFactory
+return PlaceholderMap
 ]=====],
 	},
 	{
@@ -2934,6 +3498,9 @@ return RemoteSetup
 	Shown while LP has you in detention. The server anchors your character;
 	this overlay shows the countdown and locks the sprint key so the bar
 	doesn't drain while you stand there fuming.
+
+	Your art: AssetConfig.IMAGES.DETENTION_BACKGROUND fills the screen
+	(use a semi-transparent PNG so the player still sees the room).
 ]]
 
 local DetentionOverlay = {}
@@ -2955,12 +3522,7 @@ function DetentionOverlay.init(ctx)
 		Parent = playerGui,
 	})
 
-	UiKit.new("Frame", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Color3.fromRGB(20, 8, 8),
-		BackgroundTransparency = 0.45,
-		Parent = gui,
-	})
+	UiKit.backdrop(gui, ctx.assets.IMAGES.DETENTION_BACKGROUND, Color3.fromRGB(20, 8, 8), 0.45)
 
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -2968,7 +3530,7 @@ function DetentionOverlay.init(ctx)
 		Size = UDim2.new(0.9, 0, 0, 70),
 		Text = "DETENTION!",
 		TextColor3 = theme.red,
-		TextStrokeTransparency = 0.3,
+		TextStrokeTransparency = 0,
 		Parent = gui,
 	})
 
@@ -2977,7 +3539,6 @@ function DetentionOverlay.init(ctx)
 		Position = UDim2.fromScale(0.5, 0.42),
 		Size = UDim2.new(0.9, 0, 0, 28),
 		Text = '"No running in the halls."',
-		Font = Enum.Font.GothamMedium,
 		TextColor3 = theme.textDim,
 		Parent = gui,
 	})
@@ -2987,7 +3548,7 @@ function DetentionOverlay.init(ctx)
 		Position = UDim2.fromScale(0.5, 0.56),
 		Size = UDim2.fromOffset(220, 84),
 		Text = "15",
-		TextColor3 = theme.textPrimary,
+		TextStrokeTransparency = 0,
 		Parent = gui,
 	})
 
@@ -3041,8 +3602,11 @@ return DetentionOverlay
 
 	Receives Frosty's SpeedDebuff remote:
 	  - tells StaminaController to apply the WalkSpeed multiplier (0.4x, 4s)
-	  - shows an icy screen-edge vignette (four gradient strips fading
-	    toward the center — no image assets needed) until the chill expires
+	  - shows an icy screen-edge vignette until the chill expires
+
+	Your art: AssetConfig.IMAGES.FROST_OVERLAY — a full-screen transparent
+	PNG with frost around the edges. Without it, four gradient strips fake
+	the same effect.
 ]]
 
 local FrostyVignette = {}
@@ -3064,39 +3628,48 @@ function FrostyVignette.init(ctx)
 		Parent = playerGui,
 	})
 
-	-- four edge strips, each with a gradient fading toward the screen center
-	local function edgeStrip(anchorPoint, position, size, gradientRotation)
-		local strip = UiKit.new("Frame", {
-			AnchorPoint = anchorPoint,
-			Position = position,
-			Size = size,
-			BackgroundColor3 = theme.ice,
-			BorderSizePixel = 0,
+	if UiKit.hasImage(ctx.assets.IMAGES.FROST_OVERLAY) then
+		UiKit.new("ImageLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Image = ctx.assets.IMAGES.FROST_OVERLAY,
+			ScaleType = Enum.ScaleType.Stretch,
 			Parent = gui,
 		})
-		UiKit.new("UIGradient", {
-			Rotation = gradientRotation,
-			Transparency = NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 0.35),
-				NumberSequenceKeypoint.new(1, 1),
-			}),
-			Parent = strip,
-		})
-		return strip
-	end
+	else
+		-- four edge strips, each with a gradient fading toward the screen center
+		local function edgeStrip(anchorPoint, position, size, gradientRotation)
+			local strip = UiKit.new("Frame", {
+				AnchorPoint = anchorPoint,
+				Position = position,
+				Size = size,
+				BackgroundColor3 = theme.ice,
+				BorderSizePixel = 0,
+				Parent = gui,
+			})
+			UiKit.new("UIGradient", {
+				Rotation = gradientRotation,
+				Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0.35),
+					NumberSequenceKeypoint.new(1, 1),
+				}),
+				Parent = strip,
+			})
+			return strip
+		end
 
-	edgeStrip(Vector2.new(0.5, 0), UDim2.fromScale(0.5, 0), UDim2.new(1, 0, 0.18, 0), 90) -- top
-	edgeStrip(Vector2.new(0.5, 1), UDim2.fromScale(0.5, 1), UDim2.new(1, 0, 0.18, 0), -90) -- bottom
-	edgeStrip(Vector2.new(0, 0.5), UDim2.fromScale(0, 0.5), UDim2.new(0.14, 0, 1, 0), 0) -- left
-	edgeStrip(Vector2.new(1, 0.5), UDim2.fromScale(1, 0.5), UDim2.new(0.14, 0, 1, 0), 180) -- right
+		edgeStrip(Vector2.new(0.5, 0), UDim2.fromScale(0.5, 0), UDim2.new(1, 0, 0.18, 0), 90) -- top
+		edgeStrip(Vector2.new(0.5, 1), UDim2.fromScale(0.5, 1), UDim2.new(1, 0, 0.18, 0), -90) -- bottom
+		edgeStrip(Vector2.new(0, 0.5), UDim2.fromScale(0, 0.5), UDim2.new(0.14, 0, 1, 0), 0) -- left
+		edgeStrip(Vector2.new(1, 0.5), UDim2.fromScale(1, 0.5), UDim2.new(0.14, 0, 1, 0), 180) -- right
+	end
 
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 1),
 		Position = UDim2.new(0.5, 0, 1, -110),
-		Size = UDim2.fromOffset(300, 24),
+		Size = UDim2.fromOffset(320, 24),
 		Text = "Frosty chilled you! You feel slow...",
 		TextColor3 = theme.ice,
-		TextStrokeTransparency = 0.5,
 		Parent = gui,
 	})
 
@@ -3134,16 +3707,21 @@ return FrostyVignette
 --[[
 	HudController (ModuleScript, StarterPlayerScripts.BaldiClient.HudController)
 
-	The persistent in-game overlay (HUD shell from the plan):
-	  - notebook counter (top center) + objective line
-	  - nickel count with coin icon (top right)
-	  - stamina bar (bottom center) — visuals only; logic in StaminaController
-	  - two item slots (bottom right) + "Inventory full" flash
-	  - center banner for phase changes ("EXIT IS OPEN!")
+	The persistent in-game overlay, laid out like the original game:
+	  - "Notebooks: 0/10" in the TOP LEFT, plain comic text drawn straight
+	    over the 3D view, with a little notebook icon
+	  - item slots in the TOP RIGHT as white squares, nickel count under
+	  - stamina bar bottom center
+	  - center banner for phase changes ("GET TO THE EXIT!")
 	  - mobile Sprint / Use / Swap buttons when touch is enabled
 
+	Your art (AssetConfig.IMAGES): NOTEBOOK_ICON, ITEM_SLOT, ITEMS.<id>,
+	NICKEL_ICON, STAMINA_BACK, STAMINA_FILL. Everything falls back to
+	plain shapes when an id is "".
+
 	Subscribes to its own data remotes: NotebookCollected, NickelChanged,
-	InventoryChanged is consumed by ItemUseClient which calls setSlots.
+	PickupFailed, PhaseChanged. InventoryChanged is consumed by
+	ItemUseClient, which calls setSlots.
 ]]
 
 local UiKit
@@ -3153,6 +3731,7 @@ local HudController = {}
 function HudController.init(ctx)
 	UiKit = require(script.Parent:WaitForChild("UiKit"))
 	local theme = UiKit.theme
+	local images = ctx.assets.IMAGES
 	local self = { mobile = {} }
 	local playerGui = ctx.player:WaitForChild("PlayerGui")
 	local sounds = ctx.controllers.SoundController
@@ -3166,134 +3745,79 @@ function HudController.init(ctx)
 		Parent = playerGui,
 	})
 
-	-- ===================== notebook counter (top center) =====================
+	-- ===================== notebook counter (top left) =====================
 
 	local notebookFrame = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 14),
-		Size = UDim2.fromOffset(250, 46),
-		BackgroundColor3 = theme.panel,
-		BackgroundTransparency = 0.25,
+		Position = UDim2.fromOffset(16, 14),
+		Size = UDim2.fromOffset(290, 44),
+		BackgroundTransparency = 1,
 		Parent = gui,
-		UiKit.corner(10),
 	})
 	local notebookScale = UiKit.new("UIScale", { Parent = notebookFrame })
-	UiKit.new("Frame", { -- little red book icon
-		Position = UDim2.fromOffset(10, 9),
-		Size = UDim2.fromOffset(22, 28),
+
+	local notebookIcon = UiKit.panel({
+		Position = UDim2.fromOffset(0, 4),
+		Size = UDim2.fromOffset(28, 36),
 		BackgroundColor3 = Color3.fromRGB(200, 40, 40),
 		Parent = notebookFrame,
-		UiKit.corner(4),
-	})
+	}, images.NOTEBOOK_ICON)
+	if notebookIcon:IsA("Frame") then
+		UiKit.corner(4).Parent = notebookIcon
+	end
+
 	local notebookLabel = UiKit.label({
-		Position = UDim2.fromOffset(42, 0),
-		Size = UDim2.new(1, -50, 1, 0),
+		Position = UDim2.fromOffset(38, 0),
+		Size = UDim2.new(1, -38, 1, 0),
 		Text = "Notebooks: 0/10",
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Parent = notebookFrame,
 	})
 
 	local objectiveLabel = UiKit.label({
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 64),
+		Position = UDim2.fromOffset(16, 60),
 		Size = UDim2.fromOffset(420, 22),
 		Text = "Collect 10 notebooks!",
-		TextColor3 = theme.textDim,
-		Font = Enum.Font.Gotham,
-		Parent = gui,
-	})
-
-	-- ===================== nickel counter (top right) =====================
-
-	local nickelFrame = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -14, 0, 14),
-		Size = UDim2.fromOffset(140, 46),
-		BackgroundColor3 = theme.panel,
-		BackgroundTransparency = 0.25,
-		Parent = gui,
-		UiKit.corner(10),
-	})
-	UiKit.new("Frame", { -- coin icon
-		Position = UDim2.fromOffset(10, 9),
-		Size = UDim2.fromOffset(28, 28),
-		BackgroundColor3 = Color3.fromRGB(255, 210, 70),
-		Parent = nickelFrame,
-		UiKit.corner(14),
-		UiKit.stroke(Color3.fromRGB(180, 140, 30), 2),
-	})
-	local nickelLabel = UiKit.label({
-		Position = UDim2.fromOffset(48, 0),
-		Size = UDim2.new(1, -56, 1, 0),
-		Text = "x 0",
+		TextColor3 = theme.accent,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = nickelFrame,
-	})
-
-	-- ===================== stamina bar (bottom center) =====================
-
-	UiKit.label({
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -52),
-		Size = UDim2.fromOffset(120, 16),
-		Text = "STAMINA",
-		TextColor3 = theme.textDim,
-		Parent = gui,
-	})
-	local staminaBack = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -24),
-		Size = UDim2.fromOffset(380, 26),
-		BackgroundColor3 = theme.panel,
-		BackgroundTransparency = 0.2,
-		Parent = gui,
-		UiKit.corner(8),
-		UiKit.stroke(Color3.fromRGB(0, 0, 0), 1, 0.5),
-	})
-	local staminaFillArea = UiKit.new("Frame", {
-		Position = UDim2.fromOffset(3, 3),
-		Size = UDim2.new(1, -6, 1, -6),
-		BackgroundTransparency = 1,
-		ClipsDescendants = true,
-		Parent = staminaBack,
-	})
-	local staminaFill = UiKit.new("Frame", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = theme.green,
-		Parent = staminaFillArea,
-		UiKit.corner(6),
-	})
-	local coldTag = UiKit.label({
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -76),
-		Size = UDim2.fromOffset(160, 18),
-		Text = "COLD! Slowed...",
-		TextColor3 = theme.ice,
-		Visible = false,
 		Parent = gui,
 	})
 
-	-- ===================== item slots (bottom right) =====================
+	-- ===================== item slots (top right) =====================
 
 	local slotsFrame = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(1, 1),
-		Position = UDim2.new(1, -16, 1, -16),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 14),
 		Size = UDim2.fromOffset(198, 118),
 		BackgroundTransparency = 1,
 		Parent = gui,
 	})
 
 	local function buildSlot(xOffset, hintText, isActive)
-		local slot = UiKit.new("Frame", {
+		local slot = UiKit.panel({
 			Position = UDim2.fromOffset(xOffset, 0),
 			Size = UDim2.fromOffset(92, 92),
-			BackgroundColor3 = theme.panel,
-			BackgroundTransparency = 0.2,
+			BackgroundColor3 = theme.white,
 			Parent = slotsFrame,
-			UiKit.corner(12),
-			UiKit.stroke(isActive and theme.accent or Color3.fromRGB(90, 95, 90), isActive and 3 or 2),
+		}, images.ITEM_SLOT)
+		if slot:IsA("Frame") then
+			UiKit.corner(8).Parent = slot
+			UiKit.stroke(isActive and theme.accent or Color3.fromRGB(40, 40, 40), isActive and 4 or 2).Parent = slot
+		elseif isActive then
+			UiKit.stroke(theme.accent, 4).Parent = slot
+		end
+
+		-- your item picture; hidden when the slot is empty
+		local itemImage = UiKit.new("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(72, 72),
+			BackgroundTransparency = 1,
+			ScaleType = Enum.ScaleType.Fit,
+			Visible = false,
+			Parent = slot,
 		})
-		local icon = UiKit.new("Frame", {
+		-- fallback colored block + item name when no item picture exists
+		local fallbackIcon = UiKit.new("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromScale(0.5, 0.5),
 			Size = UDim2.fromOffset(68, 68),
@@ -3302,20 +3826,18 @@ function HudController.init(ctx)
 			Parent = slot,
 			UiKit.corner(10),
 		})
-		local iconText = UiKit.label({
+		local fallbackText = UiKit.label({
 			Size = UDim2.fromScale(1, 1),
 			Text = "",
-			TextColor3 = Color3.new(1, 1, 1),
-			TextStrokeTransparency = 0.5,
-			Parent = icon,
+			Parent = fallbackIcon,
 		})
 		local emptyText = UiKit.label({
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromScale(0.5, 0.5),
 			Size = UDim2.fromOffset(70, 20),
 			Text = "empty",
-			TextColor3 = Color3.fromRGB(110, 115, 110),
-			Font = Enum.Font.Gotham,
+			TextColor3 = Color3.fromRGB(130, 130, 130),
+			TextStrokeTransparency = 1,
 			Parent = slot,
 		})
 		UiKit.label({
@@ -3323,23 +3845,114 @@ function HudController.init(ctx)
 			Position = UDim2.new(0.5, 0, 1, 4),
 			Size = UDim2.fromOffset(92, 18),
 			Text = hintText,
-			TextColor3 = theme.textDim,
-			Font = Enum.Font.Gotham,
 			Parent = slot,
 		})
-		return { frame = slot, icon = icon, iconText = iconText, emptyText = emptyText }
+		return {
+			frame = slot,
+			itemImage = itemImage,
+			fallbackIcon = fallbackIcon,
+			fallbackText = fallbackText,
+			emptyText = emptyText,
+		}
 	end
 
 	local slot1 = buildSlot(0, "[E] Use", true)
 	local slot2 = buildSlot(106, "[Q] Swap", false)
 
+	-- nickel counter, under the slots
+	local nickelFrame = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 134),
+		Size = UDim2.fromOffset(198, 32),
+		BackgroundTransparency = 1,
+		Parent = gui,
+	})
+	local nickelIcon = UiKit.panel({
+		Position = UDim2.fromOffset(0, 2),
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundColor3 = Color3.fromRGB(255, 210, 70),
+		Parent = nickelFrame,
+	}, images.NICKEL_ICON)
+	if nickelIcon:IsA("Frame") then
+		UiKit.corner(14).Parent = nickelIcon
+		UiKit.stroke(Color3.fromRGB(180, 140, 30), 2).Parent = nickelIcon
+	end
+	local nickelLabel = UiKit.label({
+		Position = UDim2.fromOffset(38, 0),
+		Size = UDim2.new(1, -38, 1, 0),
+		Text = "x 0",
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = nickelFrame,
+	})
+
 	local fullFlash = UiKit.label({
-		AnchorPoint = Vector2.new(1, 1),
-		Position = UDim2.new(1, -16, 1, -142),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 170),
 		Size = UDim2.fromOffset(198, 24),
 		Text = "Inventory full",
 		TextColor3 = theme.red,
 		TextTransparency = 1,
+		Parent = gui,
+	})
+
+	-- ===================== stamina bar (bottom center) =====================
+
+	UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -52),
+		Size = UDim2.fromOffset(120, 18),
+		Text = "STAMINA",
+		Parent = gui,
+	})
+	local staminaBack = UiKit.panel({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -24),
+		Size = UDim2.fromOffset(380, 26),
+		BackgroundColor3 = theme.panel,
+		BackgroundTransparency = 0.2,
+		Parent = gui,
+	}, images.STAMINA_BACK)
+	if staminaBack:IsA("Frame") then
+		UiKit.corner(8).Parent = staminaBack
+		UiKit.stroke(Color3.fromRGB(0, 0, 0), 1, 0.5).Parent = staminaBack
+	end
+	local staminaFillArea = UiKit.new("Frame", {
+		Position = UDim2.fromOffset(3, 3),
+		Size = UDim2.new(1, -6, 1, -6),
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Parent = staminaBack,
+	})
+	-- the fill is your STAMINA_FILL image (tinted by code) or a plain bar
+	local fillIsImage = UiKit.hasImage(images.STAMINA_FILL)
+	local staminaFill
+	if fillIsImage then
+		staminaFill = UiKit.new("ImageLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Image = images.STAMINA_FILL,
+			ScaleType = Enum.ScaleType.Stretch,
+			ImageColor3 = theme.green,
+			Parent = staminaFillArea,
+		})
+	else
+		staminaFill = UiKit.new("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = theme.green,
+			Parent = staminaFillArea,
+			UiKit.corner(6),
+		})
+	end
+	local fillColorProp = fillIsImage and "ImageColor3" or "BackgroundColor3"
+	local fillTransparencyProp = fillIsImage and "ImageTransparency" or "BackgroundTransparency"
+
+	local coldTag = UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -76),
+		Size = UDim2.fromOffset(180, 18),
+		Text = "COLD! Slowed...",
+		TextColor3 = theme.ice,
+		Visible = false,
 		Parent = gui,
 	})
 
@@ -3351,7 +3964,6 @@ function HudController.init(ctx)
 		Size = UDim2.new(0.8, 0, 0, 54),
 		Text = "",
 		TextColor3 = theme.accent,
-		TextStrokeTransparency = 0.4,
 		TextTransparency = 1,
 		Parent = gui,
 	})
@@ -3450,25 +4062,34 @@ function HudController.init(ctx)
 				UiKit.shake(staminaBack, 7)
 				sounds.play("exhausted")
 			end
-			UiKit.tween(staminaFill, 0.2, { BackgroundColor3 = color })
+			UiKit.tween(staminaFill, 0.2, { [fillColorProp] = color })
 		end
 	end
 
 	function self.flashStaminaFull()
-		staminaFill.BackgroundColor3 = theme.green
-		staminaFill.BackgroundTransparency = 0.6
-		UiKit.tween(staminaFill, 0.4, { BackgroundTransparency = 0 })
+		staminaFill[fillColorProp] = theme.green
+		staminaFill[fillTransparencyProp] = 0.6
+		UiKit.tween(staminaFill, 0.4, { [fillTransparencyProp] = 0 })
 	end
 
 	local function renderSlot(slot, itemId)
 		if itemId then
 			local def = ctx.config.ITEMS[itemId]
-			slot.icon.Visible = true
-			slot.icon.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
-			slot.iconText.Text = def.shortLabel
+			local picture = images.ITEMS[itemId]
 			slot.emptyText.Visible = false
+			if UiKit.hasImage(picture) then
+				slot.itemImage.Image = picture
+				slot.itemImage.Visible = true
+				slot.fallbackIcon.Visible = false
+			else
+				slot.itemImage.Visible = false
+				slot.fallbackIcon.Visible = true
+				slot.fallbackIcon.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+				slot.fallbackText.Text = def.shortLabel
+			end
 		else
-			slot.icon.Visible = false
+			slot.itemImage.Visible = false
+			slot.fallbackIcon.Visible = false
 			slot.emptyText.Visible = true
 		end
 	end
@@ -3520,7 +4141,7 @@ function HudController.init(ctx)
 			self.setObjective("Keep collecting — they're awake.")
 		elseif phaseName == "EXIT_OPEN" then
 			self.banner("ALL NOTEBOOKS! GET TO THE EXIT!", UiKit.theme.green)
-			self.setObjective("Escape through the EXIT door (entrance corridor)!")
+			self.setObjective("Escape through the EXIT door!")
 			sounds.play("collect", 0.7)
 		end
 	end)
@@ -3710,6 +4331,7 @@ local Players = game:GetService("Players")
 
 local shared = ReplicatedStorage:WaitForChild("BaldiShared")
 local config = require(shared:WaitForChild("GameConfig"))
+local assets = require(shared:WaitForChild("AssetConfig"))
 
 local remotesFolder = ReplicatedStorage:WaitForChild(config.REMOTES_FOLDER)
 local remotes = {}
@@ -3720,6 +4342,7 @@ end
 local ctx = {
 	player = Players.LocalPlayer,
 	config = config,
+	assets = assets, -- your image/sound ids from AssetConfig
 	remotes = remotes,
 	controllers = {},
 }
@@ -3759,6 +4382,11 @@ print("[BaldiGame] Client ready.")
 	  - Win screen: ESCAPED! + time + best + Retry / Menu (green accent)
 	  - Lose screen: CAUGHT! + catcher + cause + Retry / Menu (red accent)
 
+	Your art (AssetConfig.IMAGES): MENU_BACKGROUND, COUNTDOWN_BACKGROUND,
+	WIN_BACKGROUND, LOSE_BACKGROUND fill each screen edge to edge (like the
+	original game's title art); PLAY_BUTTON replaces the PLAY button; PANEL
+	backs the HOW TO PLAY box.
+
 	Also orchestrates the round lifecycle on the client: shows/hides the
 	HUD, enables/disables the stamina controller, and locks the camera to
 	first person during play.
@@ -3769,6 +4397,7 @@ local MenuController = {}
 function MenuController.init(ctx)
 	local UiKit = require(script.Parent:WaitForChild("UiKit"))
 	local theme = UiKit.theme
+	local images = ctx.assets.IMAGES
 	local sounds = ctx.controllers.SoundController
 	local hud = ctx.controllers.HudController
 	local stamina = ctx.controllers.StaminaController
@@ -3803,7 +4432,8 @@ function MenuController.init(ctx)
 
 	local screens = {}
 
-	local function makeScreen(name, backgroundColor)
+	-- imageKey: AssetConfig.IMAGES entry used as the full-screen backdrop
+	local function makeScreen(name, backgroundColor, imageKey)
 		local screen = UiKit.new("CanvasGroup", {
 			Name = name,
 			Size = UDim2.fromScale(1, 1),
@@ -3812,6 +4442,9 @@ function MenuController.init(ctx)
 			Visible = false,
 			Parent = gui,
 		})
+		if imageKey and UiKit.hasImage(images[imageKey]) then
+			UiKit.backdrop(screen, images[imageKey])
+		end
 		screens[name] = screen
 		return screen
 	end
@@ -3852,7 +4485,7 @@ function MenuController.init(ctx)
 
 	-- ===================== main menu =====================
 
-	local mainMenu = makeScreen("main", theme.chalkboard)
+	local mainMenu = makeScreen("main", theme.chalkboard, "MENU_BACKGROUND")
 
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0),
@@ -3860,7 +4493,7 @@ function MenuController.init(ctx)
 		Size = UDim2.new(0.9, 0, 0, 84),
 		Text = ctx.config.GAME_TITLE,
 		TextColor3 = theme.accent,
-		TextStrokeTransparency = 0.4,
+		TextStrokeTransparency = 0,
 		Parent = mainMenu,
 	})
 	UiKit.label({
@@ -3868,7 +4501,6 @@ function MenuController.init(ctx)
 		Position = UDim2.fromScale(0.5, 0.245),
 		Size = UDim2.new(0.8, 0, 0, 24),
 		Text = ctx.config.GAME_SUBTITLE,
-		Font = Enum.Font.Gotham,
 		TextColor3 = theme.textDim,
 		Parent = mainMenu,
 	})
@@ -3879,27 +4511,28 @@ function MenuController.init(ctx)
 		Size = UDim2.fromOffset(260, 64),
 		Text = "PLAY",
 		Parent = mainMenu,
-	})
+	}, images.PLAY_BUTTON)
 
 	local bestTimeLabel = UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0.5),
 		Size = UDim2.new(0.8, 0, 0, 22),
 		Text = "Best time: --",
-		Font = Enum.Font.Gotham,
 		TextColor3 = theme.textDim,
 		Parent = mainMenu,
 	})
 
-	local controlsPanel = UiKit.new("Frame", {
+	local controlsPanel = UiKit.panel({
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0.58),
 		Size = UDim2.fromOffset(420, 190),
 		BackgroundColor3 = theme.panel,
 		BackgroundTransparency = 0.35,
 		Parent = mainMenu,
-		UiKit.corner(12),
-	})
+	}, images.PANEL)
+	if controlsPanel:IsA("Frame") then
+		UiKit.corner(12).Parent = controlsPanel
+	end
 	UiKit.label({
 		Position = UDim2.fromOffset(0, 8),
 		Size = UDim2.new(1, 0, 0, 24),
@@ -3911,17 +4544,17 @@ function MenuController.init(ctx)
 		Position = UDim2.fromOffset(24, 38),
 		Size = UDim2.new(1, -48, 1, -50),
 		Text = table.concat({
-			"Collect all 10 notebooks, then escape through the EXIT.",
+			"Collect all the notebooks, then escape through the EXIT.",
 			"WASD — move   |   Shift — sprint (drains stamina)",
 			"E — use item   |   Q — swap item slots",
 			"ChatRevive chases on sight. Don't let it touch you.",
 			"LP detains anyone he SEES moving too fast. Walk near him.",
 			"Frosty is harmless... but his chill slows you down.",
 		}, "\n"),
-		Font = Enum.Font.Gotham,
 		TextScaled = false,
 		TextSize = 15,
 		TextWrapped = true,
+		TextStrokeTransparency = 1,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextColor3 = theme.textPrimary,
@@ -3930,13 +4563,12 @@ function MenuController.init(ctx)
 
 	-- ===================== countdown screen =====================
 
-	local countdownScreen = makeScreen("countdown", theme.chalkboard)
+	local countdownScreen = makeScreen("countdown", theme.chalkboard, "COUNTDOWN_BACKGROUND")
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.35),
 		Size = UDim2.new(0.9, 0, 0, 48),
 		Text = "Get ready...",
-		TextColor3 = theme.textPrimary,
 		Parent = countdownScreen,
 	})
 	local countdownNumber = UiKit.label({
@@ -3945,13 +4577,14 @@ function MenuController.init(ctx)
 		Size = UDim2.fromOffset(200, 120),
 		Text = "3",
 		TextColor3 = theme.accent,
+		TextStrokeTransparency = 0,
 		Parent = countdownScreen,
 	})
 
 	-- ===================== end screens =====================
 
-	local function makeEndScreen(name, accent, titleText)
-		local screen = makeScreen(name, theme.chalkboard)
+	local function makeEndScreen(name, accent, titleText, imageKey)
+		local screen = makeScreen(name, theme.chalkboard, imageKey)
 		UiKit.new("Frame", { -- accent strip
 			AnchorPoint = Vector2.new(0.5, 0),
 			Position = UDim2.fromScale(0.5, 0.18),
@@ -3966,7 +4599,7 @@ function MenuController.init(ctx)
 			Size = UDim2.new(0.9, 0, 0, 76),
 			Text = titleText,
 			TextColor3 = accent,
-			TextStrokeTransparency = 0.4,
+			TextStrokeTransparency = 0,
 			Parent = screen,
 		})
 		local detailLabel = UiKit.label({
@@ -3974,8 +4607,6 @@ function MenuController.init(ctx)
 			Position = UDim2.fromScale(0.5, 0.4),
 			Size = UDim2.new(0.8, 0, 0, 30),
 			Text = "",
-			Font = Enum.Font.GothamMedium,
-			TextColor3 = theme.textPrimary,
 			Parent = screen,
 		})
 		local subLabel = UiKit.label({
@@ -3983,7 +4614,6 @@ function MenuController.init(ctx)
 			Position = UDim2.fromScale(0.5, 0.47),
 			Size = UDim2.new(0.8, 0, 0, 22),
 			Text = "",
-			Font = Enum.Font.Gotham,
 			TextColor3 = theme.textDim,
 			Parent = screen,
 		})
@@ -4008,8 +4638,8 @@ function MenuController.init(ctx)
 		return { screen = screen, detail = detailLabel, sub = subLabel, retry = retryButton, menu = menuButton }
 	end
 
-	local winScreen = makeEndScreen("win", theme.green, "ESCAPED!")
-	local loseScreen = makeEndScreen("lose", theme.red, "CAUGHT!")
+	local winScreen = makeEndScreen("win", theme.green, "ESCAPED!", "WIN_BACKGROUND")
+	local loseScreen = makeEndScreen("lose", theme.red, "CAUGHT!", "LOSE_BACKGROUND")
 
 	-- ===================== round lifecycle =====================
 
@@ -4061,8 +4691,8 @@ function MenuController.init(ctx)
 		end)
 	end)
 
-	ctx.remotes.GameStarted.OnClientEvent:Connect(function()
-		hud.resetForRound(ctx.config.NOTEBOOK_SPAWN_COUNT)
+	ctx.remotes.GameStarted.OnClientEvent:Connect(function(notebooksTotal)
+		hud.resetForRound(notebooksTotal or ctx.config.NOTEBOOK_SPAWN_COUNT)
 		enterRound()
 	end)
 
@@ -4110,9 +4740,12 @@ return MenuController
 		source = [=====[
 --[[
 	SoundController (ModuleScript, StarterPlayerScripts.BaldiClient.SoundController)
-	UI / feedback sounds built only from rbxasset:// files that ship with the
-	engine, so nothing depends on marketplace assets. Every play is wrapped
-	in pcall — a missing sound never breaks gameplay.
+
+	UI / feedback sounds. Each named sound checks AssetConfig.SOUNDS first —
+	paste your own sound id there and it replaces the built-in placeholder
+	(placeholders are rbxasset:// files that ship with the engine, so
+	nothing depends on marketplace assets). Every play is wrapped in
+	pcall — a missing sound never breaks gameplay.
 ]]
 
 local SoundService = game:GetService("SoundService")
@@ -4131,29 +4764,42 @@ local LIBRARY = {
 	detention = { id = "rbxasset://sounds/snap.mp3", speed = 0.35, volume = 0.8 },
 	frost = { id = "rbxasset://sounds/swoosh.mp3", speed = 0.6, volume = 0.7 },
 	use = { id = "rbxasset://sounds/swoosh.mp3", speed = 1.2, volume = 0.6 },
+	win = { id = "", speed = 1.0, volume = 0.8 }, -- placeholder is the jingle below
 }
 
 function SoundController.init(ctx)
 	local self = {}
+	local overrides = ctx.assets.SOUNDS
 
 	function self.play(name, pitchOverride)
 		local entry = LIBRARY[name]
 		if not entry then
 			return
 		end
+		local override = overrides[name]
+		local custom = override and override ~= ""
+		local id = custom and override or entry.id
+		if id == "" then
+			return
+		end
 		pcall(function()
 			local sound = Instance.new("Sound")
-			sound.SoundId = entry.id
+			sound.SoundId = id
 			sound.Volume = entry.volume
-			sound.PlaybackSpeed = pitchOverride or entry.speed
+			-- your sound plays at its natural pitch unless a pitch is forced
+			sound.PlaybackSpeed = pitchOverride or (custom and 1 or entry.speed)
 			sound.Parent = SoundService
 			sound:Play()
-			Debris:AddItem(sound, 4)
+			Debris:AddItem(sound, 6)
 		end)
 	end
 
-	-- little rising arpeggio for the win screen
+	-- win fanfare: your SOUNDS.win asset, or a little rising arpeggio
 	function self.winJingle()
+		if overrides.win and overrides.win ~= "" then
+			self.play("win")
+			return
+		end
 		task.spawn(function()
 			for _, pitch in ipairs({ 1.0, 1.26, 1.5 }) do
 				self.play("collect", pitch)
@@ -4320,21 +4966,33 @@ return StaminaController
 		source = [=====[
 --[[
 	UiKit (ModuleScript, StarterPlayerScripts.BaldiClient.UiKit)
-	Tiny UI construction helpers + the shared color theme. Every ScreenGui
-	in the game is built in code through these, so no image assets or
-	prefab GUIs are required.
+
+	UI construction helpers + the shared theme. Every ScreenGui in the game
+	is built in code through these.
+
+	Image support: most helpers take an optional image id (from
+	AssetConfig.IMAGES). With an id they build ImageLabels/ImageButtons so
+	your art becomes the background; with "" they fall back to plain
+	colored frames — so the UI works before any art exists.
+
+	The default font is Cartoon (Comic Neue Angular), the closest built-in
+	match to the original game's Comic Sans look.
 ]]
 
 local TweenService = game:GetService("TweenService")
 
 local UiKit = {}
 
+UiKit.font = Enum.Font.Cartoon
+
 UiKit.theme = {
 	chalkboard = Color3.fromRGB(24, 40, 33),
 	panel = Color3.fromRGB(18, 22, 20),
 	panelLight = Color3.fromRGB(40, 48, 44),
+	white = Color3.fromRGB(245, 245, 240),
 	textPrimary = Color3.fromRGB(245, 245, 240),
-	textDim = Color3.fromRGB(170, 175, 170),
+	textDim = Color3.fromRGB(190, 195, 190),
+	textDark = Color3.fromRGB(25, 25, 25),
 	accent = Color3.fromRGB(255, 213, 70), -- school-bus yellow
 	green = Color3.fromRGB(80, 200, 120),
 	yellow = Color3.fromRGB(240, 200, 60),
@@ -4342,6 +5000,10 @@ UiKit.theme = {
 	blue = Color3.fromRGB(90, 160, 255),
 	ice = Color3.fromRGB(170, 225, 255),
 }
+
+function UiKit.hasImage(imageId)
+	return type(imageId) == "string" and imageId ~= ""
+end
 
 -- Create an instance from a property table. Children listed under the
 -- special key [1..n]; Parent is applied last.
@@ -4376,11 +5038,15 @@ function UiKit.stroke(color, thickness, transparency)
 	})
 end
 
+-- Text label: Cartoon font, white with a black outline by default — the
+-- original game draws its HUD text straight over the 3D view like this.
 function UiKit.label(props)
 	local defaults = {
 		BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBold,
+		Font = UiKit.font,
 		TextColor3 = UiKit.theme.textPrimary,
+		TextStrokeColor3 = Color3.new(0, 0, 0),
+		TextStrokeTransparency = 0.25,
 		TextScaled = true,
 	}
 	for key, value in pairs(props) do
@@ -4389,10 +5055,46 @@ function UiKit.label(props)
 	return UiKit.new("TextLabel", defaults)
 end
 
-function UiKit.button(props)
+-- Container that is your image when you have one, a colored frame when
+-- you don't. Children parent into it either way.
+function UiKit.panel(props, imageId)
+	if UiKit.hasImage(imageId) then
+		local imageProps = {
+			BackgroundTransparency = 1,
+			Image = imageId,
+			ScaleType = Enum.ScaleType.Stretch,
+		}
+		for key, value in pairs(props) do
+			if key ~= "BackgroundColor3" and key ~= "BackgroundTransparency" then
+				imageProps[key] = value
+			end
+		end
+		return UiKit.new("ImageLabel", imageProps)
+	end
+	return UiKit.new("Frame", props)
+end
+
+-- Button: an ImageButton showing your art (any Text prop is dropped —
+-- bake the text into the image), or a yellow TextButton fallback.
+function UiKit.button(props, imageId)
+	if UiKit.hasImage(imageId) then
+		local imageProps = {
+			BackgroundTransparency = 1,
+			Image = imageId,
+			ScaleType = Enum.ScaleType.Stretch,
+			AutoButtonColor = true,
+		}
+		for key, value in pairs(props) do
+			if key ~= "Text" and key ~= "TextColor3" and key ~= "Font"
+				and key ~= "BackgroundColor3" and key ~= "TextScaled" then
+				imageProps[key] = value
+			end
+		end
+		return UiKit.new("ImageButton", imageProps)
+	end
 	local defaults = {
-		Font = Enum.Font.GothamBold,
-		TextColor3 = UiKit.theme.panel,
+		Font = UiKit.font,
+		TextColor3 = UiKit.theme.textDark,
 		BackgroundColor3 = UiKit.theme.accent,
 		TextScaled = true,
 		AutoButtonColor = true,
@@ -4403,6 +5105,28 @@ function UiKit.button(props)
 	local button = UiKit.new("TextButton", defaults)
 	UiKit.corner(10).Parent = button
 	return button
+end
+
+-- Full-bleed background for a screen/overlay: your image, or a solid color.
+function UiKit.backdrop(parent, imageId, fallbackColor, fallbackTransparency)
+	if UiKit.hasImage(imageId) then
+		return UiKit.new("ImageLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Image = imageId,
+			ScaleType = Enum.ScaleType.Crop,
+			ZIndex = 0,
+			Parent = parent,
+		})
+	end
+	return UiKit.new("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = fallbackColor,
+		BackgroundTransparency = fallbackTransparency or 0,
+		BorderSizePixel = 0,
+		ZIndex = 0,
+		Parent = parent,
+	})
 end
 
 function UiKit.tween(instance, time, props, style)
@@ -4442,8 +5166,11 @@ return UiKit
 	VendingMachineUI (ModuleScript, StarterPlayerScripts.BaldiClient.VendingMachineUI)
 
 	Popup shown when the vending machine's ProximityPrompt is triggered:
-	item name, icon, cost, your current Nickel count, and a Buy button.
+	item name, picture, cost, your current Nickel count, and a Buy button.
 	Closes on buy, on the X, or automatically when you walk away.
+
+	Your art: AssetConfig.IMAGES.VENDING_PANEL backs the popup;
+	IMAGES.ITEMS.<id> replaces the colored item block.
 ]]
 
 local RunService = game:GetService("RunService")
@@ -4453,6 +5180,7 @@ local VendingMachineUI = {}
 function VendingMachineUI.init(ctx)
 	local UiKit = require(script.Parent:WaitForChild("UiKit"))
 	local theme = UiKit.theme
+	local images = ctx.assets.IMAGES
 	local sounds = ctx.controllers.SoundController
 	local self = {}
 
@@ -4465,16 +5193,18 @@ function VendingMachineUI.init(ctx)
 		Parent = playerGui,
 	})
 
-	local panel = UiKit.new("Frame", {
+	local panel = UiKit.panel({
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.55),
 		Size = UDim2.fromOffset(340, 250),
 		BackgroundColor3 = theme.panel,
 		BackgroundTransparency = 0.05,
 		Parent = gui,
-		UiKit.corner(14),
-		UiKit.stroke(theme.accent, 2),
-	})
+	}, images.VENDING_PANEL)
+	if panel:IsA("Frame") then
+		UiKit.corner(14).Parent = panel
+		UiKit.stroke(theme.accent, 2).Parent = panel
+	end
 
 	local titleLabel = UiKit.label({
 		Position = UDim2.fromOffset(16, 12),
@@ -4494,12 +5224,20 @@ function VendingMachineUI.init(ctx)
 		Parent = panel,
 	})
 
+	-- item picture: your image, or a colored block with the short label
 	local iconFrame = UiKit.new("Frame", {
 		Position = UDim2.fromOffset(16, 52),
 		Size = UDim2.fromOffset(76, 76),
 		BackgroundColor3 = theme.blue,
 		Parent = panel,
 		UiKit.corner(10),
+	})
+	local iconImage = UiKit.new("ImageLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ScaleType = Enum.ScaleType.Fit,
+		Visible = false,
+		Parent = iconFrame,
 	})
 	local iconText = UiKit.label({
 		Size = UDim2.fromScale(1, 1),
@@ -4511,10 +5249,10 @@ function VendingMachineUI.init(ctx)
 		Position = UDim2.fromOffset(104, 52),
 		Size = UDim2.new(1, -120, 0, 76),
 		Text = "",
-		Font = Enum.Font.Gotham,
 		TextWrapped = true,
 		TextScaled = false,
-		TextSize = 14,
+		TextSize = 15,
+		TextStrokeTransparency = 1,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextColor3 = theme.textDim,
@@ -4534,7 +5272,7 @@ function VendingMachineUI.init(ctx)
 		Size = UDim2.new(1, -32, 0, 20),
 		Text = "You have: 0 Nickels",
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Font = Enum.Font.Gotham,
+		TextStrokeTransparency = 1,
 		TextColor3 = theme.textDim,
 		Parent = panel,
 	})
@@ -4574,7 +5312,9 @@ function VendingMachineUI.init(ctx)
 		haveLabel.Text = "You have: " .. nickels .. " Nickel" .. (nickels == 1 and "" or "s")
 		local canAfford = current ~= nil and nickels >= current.cost
 		buyButton.AutoButtonColor = canAfford
-		buyButton.BackgroundColor3 = canAfford and theme.accent or Color3.fromRGB(95, 95, 90)
+		if buyButton:IsA("TextButton") then
+			buyButton.BackgroundColor3 = canAfford and theme.accent or Color3.fromRGB(95, 95, 90)
+		end
 	end
 
 	ctx.remotes.OpenVending.OnClientEvent:Connect(function(data)
@@ -4584,8 +5324,19 @@ function VendingMachineUI.init(ctx)
 		end
 		current = data
 		titleLabel.Text = def.displayName
-		iconFrame.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
-		iconText.Text = def.shortLabel
+		local picture = images.ITEMS[data.itemId]
+		if UiKit.hasImage(picture) then
+			iconImage.Image = picture
+			iconImage.Visible = true
+			iconText.Visible = false
+			iconFrame.BackgroundTransparency = 1
+		else
+			iconImage.Visible = false
+			iconText.Visible = true
+			iconFrame.BackgroundTransparency = 0
+			iconFrame.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+			iconText.Text = def.shortLabel
+		end
 		descLabel.Text = def.description
 		costLabel.Text = "Cost: " .. def.cost .. " Nickel" .. (def.cost == 1 and "" or "s")
 		resultLabel.Text = ""

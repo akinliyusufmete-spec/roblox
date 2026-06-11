@@ -12,10 +12,18 @@
 	      BSODA -> server-stepped projectile that knocks back + stuns NPCs
 	  - Vending: ProximityPrompt opens the client popup; BuyItem validates
 	    nickel count and a free slot before granting.
+
+	Your models (all optional, placeholders otherwise):
+	  ReplicatedStorage/BaldiAssets/Items/Nickel
+	  ReplicatedStorage/BaldiAssets/Items/BSODA            (world pickup)
+	  ReplicatedStorage/BaldiAssets/Items/ZESTY            (world pickup)
+	  ReplicatedStorage/BaldiAssets/Items/BsodaProjectile  (flying blast)
 ]]
 
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
+
+local AssetResolver = require(script.Parent.AssetResolver)
 
 local ItemEconomy = {}
 
@@ -90,21 +98,27 @@ function ItemEconomy.init(ctx)
 		part.Material = Enum.Material.SmoothPlastic
 		part.Anchored = true
 		part.CanCollide = false
-		part.CanQuery = false
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth
 		return part
 	end
 
 	function self.spawnNickel(position)
-		local coin = makePickupPart("Nickel", Color3.fromRGB(255, 210, 70), Vector3.new(0.25, 1.4, 1.4))
-		coin.Shape = Enum.PartType.Cylinder
-		coin.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+		local template = AssetResolver.itemTemplate("Nickel")
+		local coin
+		if template then
+			coin = AssetResolver.preparePropClone(template)
+			coin:PivotTo(CFrame.new(position + Vector3.new(0, 0.7, 0)))
+		else
+			coin = makePickupPart("Nickel", Color3.fromRGB(255, 210, 70), Vector3.new(0.25, 1.4, 1.4))
+			coin.Shape = Enum.PartType.Cylinder
+			coin.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+			local sparkle = Instance.new("PointLight")
+			sparkle.Color = Color3.fromRGB(255, 220, 90)
+			sparkle.Range = 5
+			sparkle.Parent = coin
+		end
 		coin:SetAttribute("IsNickel", true)
-		local sparkle = Instance.new("PointLight")
-		sparkle.Color = Color3.fromRGB(255, 220, 90)
-		sparkle.Range = 5
-		sparkle.Parent = coin
 		coin.Parent = ctx.map.pickupsFolder
 	end
 
@@ -113,15 +127,21 @@ function ItemEconomy.init(ctx)
 		if not def then
 			return
 		end
-		local color = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+		local template = AssetResolver.itemTemplate(itemId)
 		local pickup
-		if itemId == "BSODA" then
-			pickup = makePickupPart("Pickup_BSODA", color, Vector3.new(2, 1.1, 1.1))
-			pickup.Shape = Enum.PartType.Cylinder
-			pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
+		if template then
+			pickup = AssetResolver.preparePropClone(template)
+			pickup:PivotTo(CFrame.new(position + Vector3.new(0, 0.7, 0)))
 		else
-			pickup = makePickupPart("Pickup_" .. itemId, color, Vector3.new(1.6, 0.5, 2.2))
-			pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0))
+			local color = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+			if itemId == "BSODA" then
+				pickup = makePickupPart("Pickup_BSODA", color, Vector3.new(2, 1.1, 1.1))
+				pickup.Shape = Enum.PartType.Cylinder
+				pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
+			else
+				pickup = makePickupPart("Pickup_" .. itemId, color, Vector3.new(1.6, 0.5, 2.2))
+				pickup.CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0))
+			end
 		end
 		pickup:SetAttribute("ItemId", itemId)
 		pickup.Parent = ctx.map.pickupsFolder
@@ -163,7 +183,8 @@ function ItemEconomy.init(ctx)
 							local hrp = character and character:FindFirstChild("HumanoidRootPart")
 							if hrp then
 								for _, pickup in ipairs(pickups) do
-									if pickup.Parent and (pickup.Position - hrp.Position).Magnitude < config.PICKUP_RADIUS then
+									if pickup.Parent
+										and (pickup:GetPivot().Position - hrp.Position).Magnitude < config.PICKUP_RADIUS then
 										if pickup:GetAttribute("IsNickel") then
 											pickup:Destroy()
 											self.addNickels(player, 1)
@@ -190,14 +211,11 @@ function ItemEconomy.init(ctx)
 
 	-- ===================== BSODA projectile =====================
 
-	local function fireBsoda(player, direction)
-		local character = player.Character
-		local hrp = character and character:FindFirstChild("HumanoidRootPart")
-		if not hrp then
-			return
+	local function makeProjectileVisual()
+		local template = AssetResolver.itemTemplate("BsodaProjectile")
+		if template then
+			return AssetResolver.preparePropClone(template)
 		end
-		local cfg = config.BSODA_PROJECTILE
-
 		local can = Instance.new("Part")
 		can.Name = "BsodaBlast"
 		can.Shape = Enum.PartType.Ball
@@ -215,12 +233,23 @@ function ItemEconomy.init(ctx)
 		fizz.Speed = NumberRange.new(2, 4)
 		fizz.Color = ColorSequence.new(Color3.fromRGB(160, 210, 255))
 		fizz.Parent = can
+		return can
+	end
 
+	local function fireBsoda(player, direction)
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if not hrp then
+			return
+		end
+		local cfg = config.BSODA_PROJECTILE
+
+		local blast = makeProjectileVisual()
 		local position = hrp.Position + direction * 2.5 + Vector3.new(0, 0.5, 0)
-		can.CFrame = CFrame.new(position)
-		can.Parent = ctx.map.projectilesFolder
+		blast:PivotTo(CFrame.new(position, position + direction))
+		blast.Parent = ctx.map.projectilesFolder
 
-		-- exclude the shooter so the can doesn't pop on their own body
+		-- exclude the shooter so the blast doesn't pop on their own body
 		local params = RaycastParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
 		local excluded = { ctx.map.npcFolder, ctx.map.notebooksFolder, ctx.map.pickupsFolder, ctx.map.projectilesFolder }
@@ -233,7 +262,7 @@ function ItemEconomy.init(ctx)
 
 		task.spawn(function()
 			local traveled = 0
-			while traveled < cfg.RANGE and can.Parent do
+			while traveled < cfg.RANGE and blast.Parent do
 				local dt = task.wait()
 				local step = direction * cfg.SPEED * dt
 				local wallHit = workspace:Raycast(position, step, params)
@@ -242,7 +271,7 @@ function ItemEconomy.init(ctx)
 				end
 				position = position + step
 				traveled = traveled + step.Magnitude
-				can.CFrame = CFrame.new(position)
+				blast:PivotTo(CFrame.new(position, position + direction))
 
 				local hitNpc = nil
 				for _, npc in pairs(ctx.npcs) do
@@ -266,7 +295,7 @@ function ItemEconomy.init(ctx)
 					break
 				end
 			end
-			can:Destroy()
+			blast:Destroy()
 		end)
 	end
 

@@ -8,7 +8,12 @@
 	  - Loses sight: walks to the last known position, then resumes roaming.
 	  - Touch (catch radius): game over for that player; a Nickel is dropped
 	    where they were caught.
-	  - Enrages when all notebooks are collected: faster, scans more often.
+	  - Enrages when all notebooks are collected: faster, scans more often,
+	    glows red (your rig gets a red Highlight; the placeholder also
+	    recolors).
+
+	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/ChatRevive
+	Chase sound: AssetConfig.SOUNDS.chase (else a built-in snap)
 ]]
 
 local RunService = game:GetService("RunService")
@@ -30,23 +35,25 @@ function ChatReviveAI.init(ctx)
 		enraged = false,
 	}
 
-	local model = NpcFactory.createRig({
+	local model = NpcFactory.create({
 		name = cfg.NAME,
 		bodyColor = COLOR_BODY,
 		headColor = COLOR_HEAD,
 		tagColor = Color3.fromRGB(255, 90, 80),
 	}, ctx.map.npcFolder)
-	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.CHATREVIVE)
+	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.CHATREVIVE,
+		(cfg.ROAM_SPEED + cfg.CHASE_SPEED) / 2)
 	self.base = base
 	self.model = model
 
-	-- the iconic chase noise: a snap played on every re-path tick
+	-- the iconic chase noise, played on every re-path tick
+	local chaseSoundId = ctx.assets.SOUNDS.chase
 	local slap = Instance.new("Sound")
-	slap.Name = "ChaseSlap"
-	slap.SoundId = "rbxasset://sounds/snap.mp3"
+	slap.Name = "ChaseSound"
+	slap.SoundId = (chaseSoundId ~= "" and chaseSoundId) or "rbxasset://sounds/snap.mp3"
 	slap.Volume = 0.8
 	slap.RollOffMaxDistance = 90
-	slap.Parent = model:WaitForChild("Torso")
+	slap.Parent = base.root
 	self.slapSound = slap
 
 	-- ---------- helpers ----------
@@ -170,34 +177,52 @@ function ChatReviveAI.init(ctx)
 
 	-- ---------- public API ----------
 
+	local isPlaceholder = model:GetAttribute("BaldiPlaceholderRig") == true
+
 	function self.enrage()
 		if self.enraged then
 			return
 		end
 		self.enraged = true
-		for _, part in ipairs(model:GetChildren()) do
-			if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
-				part.Color = COLOR_ENRAGED
+		if isPlaceholder then
+			for _, part in ipairs(model:GetChildren()) do
+				if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
+					part.Color = COLOR_ENRAGED
+				end
 			end
+		else
+			-- tint your rig without overwriting its colors
+			local tint = Instance.new("Highlight")
+			tint.Name = "EnrageTint"
+			tint.FillColor = Color3.fromRGB(180, 20, 20)
+			tint.FillTransparency = 0.7
+			tint.OutlineColor = Color3.fromRGB(120, 0, 0)
+			tint.OutlineTransparency = 0.4
+			tint.Parent = model
 		end
 		local glow = Instance.new("PointLight")
 		glow.Name = "EnrageGlow"
 		glow.Color = Color3.fromRGB(255, 40, 40)
 		glow.Range = 12
 		glow.Brightness = 2
-		glow.Parent = model:FindFirstChild("Torso")
+		glow.Parent = base.root
 	end
 
 	function self.reset()
 		self.enraged = false
-		local torso = model:FindFirstChild("Torso")
-		local oldGlow = torso and torso:FindFirstChild("EnrageGlow")
+		local oldGlow = base.root:FindFirstChild("EnrageGlow")
 		if oldGlow then
 			oldGlow:Destroy()
 		end
-		for _, part in ipairs(model:GetChildren()) do
-			if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
-				part.Color = (part.Name == "Head") and COLOR_HEAD or COLOR_BODY
+		local oldTint = model:FindFirstChild("EnrageTint")
+		if oldTint then
+			oldTint:Destroy()
+		end
+		if isPlaceholder then
+			for _, part in ipairs(model:GetChildren()) do
+				if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Name ~= "FaceMark" then
+					part.Color = (part.Name == "Head") and COLOR_HEAD or COLOR_BODY
+				end
 			end
 		end
 		base:resetToSpawn()

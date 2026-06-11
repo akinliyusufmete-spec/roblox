@@ -2,8 +2,11 @@
 	VendingMachineUI (ModuleScript, StarterPlayerScripts.BaldiClient.VendingMachineUI)
 
 	Popup shown when the vending machine's ProximityPrompt is triggered:
-	item name, icon, cost, your current Nickel count, and a Buy button.
+	item name, picture, cost, your current Nickel count, and a Buy button.
 	Closes on buy, on the X, or automatically when you walk away.
+
+	Your art: AssetConfig.IMAGES.VENDING_PANEL backs the popup;
+	IMAGES.ITEMS.<id> replaces the colored item block.
 ]]
 
 local RunService = game:GetService("RunService")
@@ -13,6 +16,7 @@ local VendingMachineUI = {}
 function VendingMachineUI.init(ctx)
 	local UiKit = require(script.Parent:WaitForChild("UiKit"))
 	local theme = UiKit.theme
+	local images = ctx.assets.IMAGES
 	local sounds = ctx.controllers.SoundController
 	local self = {}
 
@@ -25,16 +29,18 @@ function VendingMachineUI.init(ctx)
 		Parent = playerGui,
 	})
 
-	local panel = UiKit.new("Frame", {
+	local panel = UiKit.panel({
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.55),
 		Size = UDim2.fromOffset(340, 250),
 		BackgroundColor3 = theme.panel,
 		BackgroundTransparency = 0.05,
 		Parent = gui,
-		UiKit.corner(14),
-		UiKit.stroke(theme.accent, 2),
-	})
+	}, images.VENDING_PANEL)
+	if panel:IsA("Frame") then
+		UiKit.corner(14).Parent = panel
+		UiKit.stroke(theme.accent, 2).Parent = panel
+	end
 
 	local titleLabel = UiKit.label({
 		Position = UDim2.fromOffset(16, 12),
@@ -54,12 +60,20 @@ function VendingMachineUI.init(ctx)
 		Parent = panel,
 	})
 
+	-- item picture: your image, or a colored block with the short label
 	local iconFrame = UiKit.new("Frame", {
 		Position = UDim2.fromOffset(16, 52),
 		Size = UDim2.fromOffset(76, 76),
 		BackgroundColor3 = theme.blue,
 		Parent = panel,
 		UiKit.corner(10),
+	})
+	local iconImage = UiKit.new("ImageLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ScaleType = Enum.ScaleType.Fit,
+		Visible = false,
+		Parent = iconFrame,
 	})
 	local iconText = UiKit.label({
 		Size = UDim2.fromScale(1, 1),
@@ -71,10 +85,10 @@ function VendingMachineUI.init(ctx)
 		Position = UDim2.fromOffset(104, 52),
 		Size = UDim2.new(1, -120, 0, 76),
 		Text = "",
-		Font = Enum.Font.Gotham,
 		TextWrapped = true,
 		TextScaled = false,
-		TextSize = 14,
+		TextSize = 15,
+		TextStrokeTransparency = 1,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextColor3 = theme.textDim,
@@ -94,7 +108,7 @@ function VendingMachineUI.init(ctx)
 		Size = UDim2.new(1, -32, 0, 20),
 		Text = "You have: 0 Nickels",
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Font = Enum.Font.Gotham,
+		TextStrokeTransparency = 1,
 		TextColor3 = theme.textDim,
 		Parent = panel,
 	})
@@ -134,7 +148,9 @@ function VendingMachineUI.init(ctx)
 		haveLabel.Text = "You have: " .. nickels .. " Nickel" .. (nickels == 1 and "" or "s")
 		local canAfford = current ~= nil and nickels >= current.cost
 		buyButton.AutoButtonColor = canAfford
-		buyButton.BackgroundColor3 = canAfford and theme.accent or Color3.fromRGB(95, 95, 90)
+		if buyButton:IsA("TextButton") then
+			buyButton.BackgroundColor3 = canAfford and theme.accent or Color3.fromRGB(95, 95, 90)
+		end
 	end
 
 	ctx.remotes.OpenVending.OnClientEvent:Connect(function(data)
@@ -144,8 +160,19 @@ function VendingMachineUI.init(ctx)
 		end
 		current = data
 		titleLabel.Text = def.displayName
-		iconFrame.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
-		iconText.Text = def.shortLabel
+		local picture = images.ITEMS[data.itemId]
+		if UiKit.hasImage(picture) then
+			iconImage.Image = picture
+			iconImage.Visible = true
+			iconText.Visible = false
+			iconFrame.BackgroundTransparency = 1
+		else
+			iconImage.Visible = false
+			iconText.Visible = true
+			iconFrame.BackgroundTransparency = 0
+			iconFrame.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+			iconText.Text = def.shortLabel
+		end
 		descLabel.Text = def.description
 		costLabel.Text = "Cost: " .. def.cost .. " Nickel" .. (def.cost == 1 and "" or "s")
 		resultLabel.Text = ""

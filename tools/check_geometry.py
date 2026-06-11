@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Sanity-checks the MapBuilder placement data: every notebook node, waypoint,
-NPC spawn, pickup spawn and player spawn must sit inside a walkable region
-and clear of furniture. Mirrors the rects hard-coded in MapBuilder.lua —
-update both together.
+Sanity-checks the PlaceholderMap placement data: every notebook node,
+waypoint, NPC spawn, pickup spawn and player spawn must sit inside a
+walkable region and clear of furniture. Mirrors the rects hard-coded in
+PlaceholderMap.lua — update both together.
 """
 
 WALKABLE = {  # name: (x1, z1, x2, z2)

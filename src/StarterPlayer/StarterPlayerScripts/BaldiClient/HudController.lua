@@ -1,16 +1,21 @@
 --[[
 	HudController (ModuleScript, StarterPlayerScripts.BaldiClient.HudController)
 
-	The persistent in-game overlay (HUD shell from the plan):
-	  - notebook counter (top center) + objective line
-	  - nickel count with coin icon (top right)
-	  - stamina bar (bottom center) — visuals only; logic in StaminaController
-	  - two item slots (bottom right) + "Inventory full" flash
-	  - center banner for phase changes ("EXIT IS OPEN!")
+	The persistent in-game overlay, laid out like the original game:
+	  - "Notebooks: 0/10" in the TOP LEFT, plain comic text drawn straight
+	    over the 3D view, with a little notebook icon
+	  - item slots in the TOP RIGHT as white squares, nickel count under
+	  - stamina bar bottom center
+	  - center banner for phase changes ("GET TO THE EXIT!")
 	  - mobile Sprint / Use / Swap buttons when touch is enabled
 
+	Your art (AssetConfig.IMAGES): NOTEBOOK_ICON, ITEM_SLOT, ITEMS.<id>,
+	NICKEL_ICON, STAMINA_BACK, STAMINA_FILL. Everything falls back to
+	plain shapes when an id is "".
+
 	Subscribes to its own data remotes: NotebookCollected, NickelChanged,
-	InventoryChanged is consumed by ItemUseClient which calls setSlots.
+	PickupFailed, PhaseChanged. InventoryChanged is consumed by
+	ItemUseClient, which calls setSlots.
 ]]
 
 local UiKit
@@ -20,6 +25,7 @@ local HudController = {}
 function HudController.init(ctx)
 	UiKit = require(script.Parent:WaitForChild("UiKit"))
 	local theme = UiKit.theme
+	local images = ctx.assets.IMAGES
 	local self = { mobile = {} }
 	local playerGui = ctx.player:WaitForChild("PlayerGui")
 	local sounds = ctx.controllers.SoundController
@@ -33,134 +39,79 @@ function HudController.init(ctx)
 		Parent = playerGui,
 	})
 
-	-- ===================== notebook counter (top center) =====================
+	-- ===================== notebook counter (top left) =====================
 
 	local notebookFrame = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 14),
-		Size = UDim2.fromOffset(250, 46),
-		BackgroundColor3 = theme.panel,
-		BackgroundTransparency = 0.25,
+		Position = UDim2.fromOffset(16, 14),
+		Size = UDim2.fromOffset(290, 44),
+		BackgroundTransparency = 1,
 		Parent = gui,
-		UiKit.corner(10),
 	})
 	local notebookScale = UiKit.new("UIScale", { Parent = notebookFrame })
-	UiKit.new("Frame", { -- little red book icon
-		Position = UDim2.fromOffset(10, 9),
-		Size = UDim2.fromOffset(22, 28),
+
+	local notebookIcon = UiKit.panel({
+		Position = UDim2.fromOffset(0, 4),
+		Size = UDim2.fromOffset(28, 36),
 		BackgroundColor3 = Color3.fromRGB(200, 40, 40),
 		Parent = notebookFrame,
-		UiKit.corner(4),
-	})
+	}, images.NOTEBOOK_ICON)
+	if notebookIcon:IsA("Frame") then
+		UiKit.corner(4).Parent = notebookIcon
+	end
+
 	local notebookLabel = UiKit.label({
-		Position = UDim2.fromOffset(42, 0),
-		Size = UDim2.new(1, -50, 1, 0),
+		Position = UDim2.fromOffset(38, 0),
+		Size = UDim2.new(1, -38, 1, 0),
 		Text = "Notebooks: 0/10",
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Parent = notebookFrame,
 	})
 
 	local objectiveLabel = UiKit.label({
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 64),
+		Position = UDim2.fromOffset(16, 60),
 		Size = UDim2.fromOffset(420, 22),
 		Text = "Collect 10 notebooks!",
-		TextColor3 = theme.textDim,
-		Font = Enum.Font.Gotham,
-		Parent = gui,
-	})
-
-	-- ===================== nickel counter (top right) =====================
-
-	local nickelFrame = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -14, 0, 14),
-		Size = UDim2.fromOffset(140, 46),
-		BackgroundColor3 = theme.panel,
-		BackgroundTransparency = 0.25,
-		Parent = gui,
-		UiKit.corner(10),
-	})
-	UiKit.new("Frame", { -- coin icon
-		Position = UDim2.fromOffset(10, 9),
-		Size = UDim2.fromOffset(28, 28),
-		BackgroundColor3 = Color3.fromRGB(255, 210, 70),
-		Parent = nickelFrame,
-		UiKit.corner(14),
-		UiKit.stroke(Color3.fromRGB(180, 140, 30), 2),
-	})
-	local nickelLabel = UiKit.label({
-		Position = UDim2.fromOffset(48, 0),
-		Size = UDim2.new(1, -56, 1, 0),
-		Text = "x 0",
+		TextColor3 = theme.accent,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = nickelFrame,
-	})
-
-	-- ===================== stamina bar (bottom center) =====================
-
-	UiKit.label({
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -52),
-		Size = UDim2.fromOffset(120, 16),
-		Text = "STAMINA",
-		TextColor3 = theme.textDim,
-		Parent = gui,
-	})
-	local staminaBack = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -24),
-		Size = UDim2.fromOffset(380, 26),
-		BackgroundColor3 = theme.panel,
-		BackgroundTransparency = 0.2,
-		Parent = gui,
-		UiKit.corner(8),
-		UiKit.stroke(Color3.fromRGB(0, 0, 0), 1, 0.5),
-	})
-	local staminaFillArea = UiKit.new("Frame", {
-		Position = UDim2.fromOffset(3, 3),
-		Size = UDim2.new(1, -6, 1, -6),
-		BackgroundTransparency = 1,
-		ClipsDescendants = true,
-		Parent = staminaBack,
-	})
-	local staminaFill = UiKit.new("Frame", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = theme.green,
-		Parent = staminaFillArea,
-		UiKit.corner(6),
-	})
-	local coldTag = UiKit.label({
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -76),
-		Size = UDim2.fromOffset(160, 18),
-		Text = "COLD! Slowed...",
-		TextColor3 = theme.ice,
-		Visible = false,
 		Parent = gui,
 	})
 
-	-- ===================== item slots (bottom right) =====================
+	-- ===================== item slots (top right) =====================
 
 	local slotsFrame = UiKit.new("Frame", {
-		AnchorPoint = Vector2.new(1, 1),
-		Position = UDim2.new(1, -16, 1, -16),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 14),
 		Size = UDim2.fromOffset(198, 118),
 		BackgroundTransparency = 1,
 		Parent = gui,
 	})
 
 	local function buildSlot(xOffset, hintText, isActive)
-		local slot = UiKit.new("Frame", {
+		local slot = UiKit.panel({
 			Position = UDim2.fromOffset(xOffset, 0),
 			Size = UDim2.fromOffset(92, 92),
-			BackgroundColor3 = theme.panel,
-			BackgroundTransparency = 0.2,
+			BackgroundColor3 = theme.white,
 			Parent = slotsFrame,
-			UiKit.corner(12),
-			UiKit.stroke(isActive and theme.accent or Color3.fromRGB(90, 95, 90), isActive and 3 or 2),
+		}, images.ITEM_SLOT)
+		if slot:IsA("Frame") then
+			UiKit.corner(8).Parent = slot
+			UiKit.stroke(isActive and theme.accent or Color3.fromRGB(40, 40, 40), isActive and 4 or 2).Parent = slot
+		elseif isActive then
+			UiKit.stroke(theme.accent, 4).Parent = slot
+		end
+
+		-- your item picture; hidden when the slot is empty
+		local itemImage = UiKit.new("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(72, 72),
+			BackgroundTransparency = 1,
+			ScaleType = Enum.ScaleType.Fit,
+			Visible = false,
+			Parent = slot,
 		})
-		local icon = UiKit.new("Frame", {
+		-- fallback colored block + item name when no item picture exists
+		local fallbackIcon = UiKit.new("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromScale(0.5, 0.5),
 			Size = UDim2.fromOffset(68, 68),
@@ -169,20 +120,18 @@ function HudController.init(ctx)
 			Parent = slot,
 			UiKit.corner(10),
 		})
-		local iconText = UiKit.label({
+		local fallbackText = UiKit.label({
 			Size = UDim2.fromScale(1, 1),
 			Text = "",
-			TextColor3 = Color3.new(1, 1, 1),
-			TextStrokeTransparency = 0.5,
-			Parent = icon,
+			Parent = fallbackIcon,
 		})
 		local emptyText = UiKit.label({
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromScale(0.5, 0.5),
 			Size = UDim2.fromOffset(70, 20),
 			Text = "empty",
-			TextColor3 = Color3.fromRGB(110, 115, 110),
-			Font = Enum.Font.Gotham,
+			TextColor3 = Color3.fromRGB(130, 130, 130),
+			TextStrokeTransparency = 1,
 			Parent = slot,
 		})
 		UiKit.label({
@@ -190,23 +139,114 @@ function HudController.init(ctx)
 			Position = UDim2.new(0.5, 0, 1, 4),
 			Size = UDim2.fromOffset(92, 18),
 			Text = hintText,
-			TextColor3 = theme.textDim,
-			Font = Enum.Font.Gotham,
 			Parent = slot,
 		})
-		return { frame = slot, icon = icon, iconText = iconText, emptyText = emptyText }
+		return {
+			frame = slot,
+			itemImage = itemImage,
+			fallbackIcon = fallbackIcon,
+			fallbackText = fallbackText,
+			emptyText = emptyText,
+		}
 	end
 
 	local slot1 = buildSlot(0, "[E] Use", true)
 	local slot2 = buildSlot(106, "[Q] Swap", false)
 
+	-- nickel counter, under the slots
+	local nickelFrame = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 134),
+		Size = UDim2.fromOffset(198, 32),
+		BackgroundTransparency = 1,
+		Parent = gui,
+	})
+	local nickelIcon = UiKit.panel({
+		Position = UDim2.fromOffset(0, 2),
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundColor3 = Color3.fromRGB(255, 210, 70),
+		Parent = nickelFrame,
+	}, images.NICKEL_ICON)
+	if nickelIcon:IsA("Frame") then
+		UiKit.corner(14).Parent = nickelIcon
+		UiKit.stroke(Color3.fromRGB(180, 140, 30), 2).Parent = nickelIcon
+	end
+	local nickelLabel = UiKit.label({
+		Position = UDim2.fromOffset(38, 0),
+		Size = UDim2.new(1, -38, 1, 0),
+		Text = "x 0",
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = nickelFrame,
+	})
+
 	local fullFlash = UiKit.label({
-		AnchorPoint = Vector2.new(1, 1),
-		Position = UDim2.new(1, -16, 1, -142),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 170),
 		Size = UDim2.fromOffset(198, 24),
 		Text = "Inventory full",
 		TextColor3 = theme.red,
 		TextTransparency = 1,
+		Parent = gui,
+	})
+
+	-- ===================== stamina bar (bottom center) =====================
+
+	UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -52),
+		Size = UDim2.fromOffset(120, 18),
+		Text = "STAMINA",
+		Parent = gui,
+	})
+	local staminaBack = UiKit.panel({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -24),
+		Size = UDim2.fromOffset(380, 26),
+		BackgroundColor3 = theme.panel,
+		BackgroundTransparency = 0.2,
+		Parent = gui,
+	}, images.STAMINA_BACK)
+	if staminaBack:IsA("Frame") then
+		UiKit.corner(8).Parent = staminaBack
+		UiKit.stroke(Color3.fromRGB(0, 0, 0), 1, 0.5).Parent = staminaBack
+	end
+	local staminaFillArea = UiKit.new("Frame", {
+		Position = UDim2.fromOffset(3, 3),
+		Size = UDim2.new(1, -6, 1, -6),
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Parent = staminaBack,
+	})
+	-- the fill is your STAMINA_FILL image (tinted by code) or a plain bar
+	local fillIsImage = UiKit.hasImage(images.STAMINA_FILL)
+	local staminaFill
+	if fillIsImage then
+		staminaFill = UiKit.new("ImageLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Image = images.STAMINA_FILL,
+			ScaleType = Enum.ScaleType.Stretch,
+			ImageColor3 = theme.green,
+			Parent = staminaFillArea,
+		})
+	else
+		staminaFill = UiKit.new("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = theme.green,
+			Parent = staminaFillArea,
+			UiKit.corner(6),
+		})
+	end
+	local fillColorProp = fillIsImage and "ImageColor3" or "BackgroundColor3"
+	local fillTransparencyProp = fillIsImage and "ImageTransparency" or "BackgroundTransparency"
+
+	local coldTag = UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -76),
+		Size = UDim2.fromOffset(180, 18),
+		Text = "COLD! Slowed...",
+		TextColor3 = theme.ice,
+		Visible = false,
 		Parent = gui,
 	})
 
@@ -218,7 +258,6 @@ function HudController.init(ctx)
 		Size = UDim2.new(0.8, 0, 0, 54),
 		Text = "",
 		TextColor3 = theme.accent,
-		TextStrokeTransparency = 0.4,
 		TextTransparency = 1,
 		Parent = gui,
 	})
@@ -317,25 +356,34 @@ function HudController.init(ctx)
 				UiKit.shake(staminaBack, 7)
 				sounds.play("exhausted")
 			end
-			UiKit.tween(staminaFill, 0.2, { BackgroundColor3 = color })
+			UiKit.tween(staminaFill, 0.2, { [fillColorProp] = color })
 		end
 	end
 
 	function self.flashStaminaFull()
-		staminaFill.BackgroundColor3 = theme.green
-		staminaFill.BackgroundTransparency = 0.6
-		UiKit.tween(staminaFill, 0.4, { BackgroundTransparency = 0 })
+		staminaFill[fillColorProp] = theme.green
+		staminaFill[fillTransparencyProp] = 0.6
+		UiKit.tween(staminaFill, 0.4, { [fillTransparencyProp] = 0 })
 	end
 
 	local function renderSlot(slot, itemId)
 		if itemId then
 			local def = ctx.config.ITEMS[itemId]
-			slot.icon.Visible = true
-			slot.icon.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
-			slot.iconText.Text = def.shortLabel
+			local picture = images.ITEMS[itemId]
 			slot.emptyText.Visible = false
+			if UiKit.hasImage(picture) then
+				slot.itemImage.Image = picture
+				slot.itemImage.Visible = true
+				slot.fallbackIcon.Visible = false
+			else
+				slot.itemImage.Visible = false
+				slot.fallbackIcon.Visible = true
+				slot.fallbackIcon.BackgroundColor3 = Color3.fromRGB(def.color[1], def.color[2], def.color[3])
+				slot.fallbackText.Text = def.shortLabel
+			end
 		else
-			slot.icon.Visible = false
+			slot.itemImage.Visible = false
+			slot.fallbackIcon.Visible = false
 			slot.emptyText.Visible = true
 		end
 	end
@@ -387,7 +435,7 @@ function HudController.init(ctx)
 			self.setObjective("Keep collecting — they're awake.")
 		elseif phaseName == "EXIT_OPEN" then
 			self.banner("ALL NOTEBOOKS! GET TO THE EXIT!", UiKit.theme.green)
-			self.setObjective("Escape through the EXIT door (entrance corridor)!")
+			self.setObjective("Escape through the EXIT door!")
 			sounds.play("collect", 0.7)
 		end
 	end)

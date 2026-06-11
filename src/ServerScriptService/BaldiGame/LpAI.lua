@@ -12,6 +12,9 @@
 	replicate to the server, so we measure the character's actual horizontal
 	velocity instead — same threshold, but it can't be spoofed. Sprinting
 	(24) trips it, walking (16) never does.
+
+	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/LP
+	Alert sound: AssetConfig.SOUNDS.whistle (else a built-in ping)
 ]]
 
 local RunService = game:GetService("RunService")
@@ -28,23 +31,25 @@ function LpAI.init(ctx)
 	local cfg = ctx.config.NPC.LP
 	local self = { ctx = ctx, cfg = cfg }
 
-	local model = NpcFactory.createRig({
+	local model = NpcFactory.create({
 		name = cfg.NAME,
 		bodyColor = COLOR_BODY,
 		headColor = COLOR_HEAD,
 		tagColor = Color3.fromRGB(120, 150, 255),
 	}, ctx.map.npcFolder)
-	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.LP)
+	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.LP,
+		(cfg.ROAM_SPEED + cfg.CHASE_SPEED) / 2)
 	self.base = base
 	self.model = model
 
+	local whistleSoundId = ctx.assets.SOUNDS.whistle
 	local whistle = Instance.new("Sound")
 	whistle.Name = "Whistle"
-	whistle.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+	whistle.SoundId = (whistleSoundId ~= "" and whistleSoundId) or "rbxasset://sounds/electronicpingshort.wav"
 	whistle.Volume = 0.9
-	whistle.PlaybackSpeed = 0.6
+	whistle.PlaybackSpeed = whistleSoundId ~= "" and 1 or 0.6
 	whistle.RollOffMaxDistance = 80
-	whistle.Parent = model:WaitForChild("Torso")
+	whistle.Parent = base.root
 
 	-- ---------- helpers ----------
 

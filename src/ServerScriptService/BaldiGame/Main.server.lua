@@ -4,8 +4,8 @@
 	Server bootstrap. Builds the shared context table and initializes every
 	system in dependency order:
 
-	  config -> remotes -> map -> NPCs -> economy/detention/notebooks/exit
-	         -> GameManager (last; it wires the Play button)
+	  config/assets -> remotes -> map -> NPCs -> economy/detention/
+	  notebooks/exit -> GameManager (last; it wires the Play button)
 
 	All systems communicate through the ctx table instead of require-ing
 	each other, which keeps the module graph cycle-free.
@@ -15,9 +15,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local shared = ReplicatedStorage:WaitForChild("BaldiShared")
 local GameConfig = require(shared:WaitForChild("GameConfig"))
+local AssetConfig = require(shared:WaitForChild("AssetConfig"))
 
 local RemoteSetup = require(script.Parent.RemoteSetup)
-local MapBuilder = require(script.Parent.MapBuilder)
+local MapResolver = require(script.Parent.MapResolver)
 local ChatReviveAI = require(script.Parent.ChatReviveAI)
 local LpAI = require(script.Parent.LpAI)
 local FrostyAI = require(script.Parent.FrostyAI)
@@ -29,8 +30,9 @@ local GameManager = require(script.Parent.GameManager)
 
 local ctx = {
 	config = GameConfig,
+	assets = AssetConfig, -- your image/sound ids (NPC sounds read these)
 	remotes = nil, -- RemoteSetup
-	map = nil, -- MapBuilder
+	map = nil, -- MapResolver (your BaldiMap, or the placeholder school)
 	npcs = {}, -- ChatReviveAI / LpAI / FrostyAI register themselves
 	manager = nil, -- GameManager
 	economy = nil, -- ItemEconomy
@@ -40,9 +42,9 @@ local ctx = {
 }
 
 RemoteSetup.init(ctx)
-MapBuilder.build(ctx)
+MapResolver.resolve(ctx)
 
--- Give the navmesh a moment to bake over the freshly generated geometry
+-- Give the navmesh a moment to bake over freshly generated geometry
 -- before the first paths are computed (paths fail gracefully anyway).
 task.wait(1)
 
@@ -57,4 +59,4 @@ NotebookSpawner.init(ctx)
 ExitDoorManager.init(ctx)
 GameManager.init(ctx)
 
-print("[BaldiGame] Server ready. Map built, NPCs spawned, remotes live.")
+print("[BaldiGame] Server ready. Map resolved, NPCs spawned, remotes live.")

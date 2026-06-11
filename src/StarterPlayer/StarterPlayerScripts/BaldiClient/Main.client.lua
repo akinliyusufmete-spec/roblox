@@ -13,6 +13,7 @@ local Players = game:GetService("Players")
 
 local shared = ReplicatedStorage:WaitForChild("BaldiShared")
 local config = require(shared:WaitForChild("GameConfig"))
+local assets = require(shared:WaitForChild("AssetConfig"))
 
 local remotesFolder = ReplicatedStorage:WaitForChild(config.REMOTES_FOLDER)
 local remotes = {}
@@ -23,6 +24,7 @@ end
 local ctx = {
 	player = Players.LocalPlayer,
 	config = config,
+	assets = assets, -- your image/sound ids from AssetConfig
 	remotes = remotes,
 	controllers = {},
 }

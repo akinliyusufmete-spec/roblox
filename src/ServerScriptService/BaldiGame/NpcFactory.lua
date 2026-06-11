@@ -1,10 +1,19 @@
 --[[
 	NpcFactory (ModuleScript, ServerScriptService.BaldiGame.NpcFactory)
-	Builds simple R6 humanoid rigs entirely in code (no asset uploads needed),
-	with a floating name tag so testers can tell the characters apart.
+
+	Produces the character models the AIs drive.
+
+	If you made a rig (ReplicatedStorage/BaldiAssets/Npcs/<Name>, any rig
+	type, must contain a Humanoid + HumanoidRootPart, optional Animations
+	folder) it is cloned and prepared. Otherwise a simple placeholder rig
+	is built in code so the game runs before your characters exist.
 ]]
 
+local AssetResolver = require(script.Parent.AssetResolver)
+
 local NpcFactory = {}
+
+-- ===================== placeholder rig =====================
 
 local function makeBodyPart(name, size, color, transparency)
 	local part = Instance.new("Part")
@@ -31,10 +40,10 @@ local function joinParts(part0, part1, offset, jointName)
 	return motor
 end
 
--- spec = { name, bodyColor, headColor, transparency?, glowColor? }
-function NpcFactory.createRig(spec, parent)
+local function buildPlaceholderRig(spec)
 	local model = Instance.new("Model")
 	model.Name = spec.name
+	model:SetAttribute("BaldiPlaceholderRig", true)
 
 	local hrp = makeBodyPart("HumanoidRootPart", Vector3.new(2, 2, 1), spec.bodyColor, 1)
 	hrp.CanCollide = false
@@ -75,34 +84,7 @@ function NpcFactory.createRig(spec, parent)
 
 	local humanoid = Instance.new("Humanoid")
 	humanoid.RigType = Enum.HumanoidRigType.R6
-	humanoid.MaxHealth = 100000
-	humanoid.Health = 100000
-	humanoid.RequiresNeck = false
-	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
-	humanoid.AutoRotate = true
-	humanoid.DisplayName = spec.name
-	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 	humanoid.Parent = model
-
-	-- name tag
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "NameTag"
-	billboard.Size = UDim2.new(0, 130, 0, 30)
-	billboard.StudsOffset = Vector3.new(0, 2.6, 0)
-	billboard.AlwaysOnTop = false
-	billboard.MaxDistance = 90
-	billboard.Parent = head
-	local tag = Instance.new("TextLabel")
-	tag.Size = UDim2.fromScale(1, 1)
-	tag.BackgroundTransparency = 1
-	tag.Font = Enum.Font.GothamBold
-	tag.TextScaled = true
-	tag.TextColor3 = spec.tagColor or Color3.new(1, 1, 1)
-	tag.TextStrokeTransparency = 0.2
-	tag.Text = spec.name
-	tag.Parent = billboard
 
 	if spec.glowColor then
 		local glow = Instance.new("PointLight")
@@ -113,6 +95,77 @@ function NpcFactory.createRig(spec, parent)
 	end
 
 	model.PrimaryPart = hrp
+	return model
+end
+
+-- ===================== shared preparation =====================
+
+local function addNameTag(model, spec)
+	-- only when the rig doesn't already carry its own name display
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BillboardGui") then
+			return
+		end
+	end
+	local target = model:FindFirstChild("Head") or model.PrimaryPart
+	if not target then
+		return
+	end
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "NameTag"
+	billboard.Size = UDim2.new(0, 130, 0, 30)
+	billboard.StudsOffset = Vector3.new(0, 2.6, 0)
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 90
+	billboard.Parent = target
+	local tag = Instance.new("TextLabel")
+	tag.Size = UDim2.fromScale(1, 1)
+	tag.BackgroundTransparency = 1
+	tag.Font = Enum.Font.Cartoon
+	tag.TextScaled = true
+	tag.TextColor3 = spec.tagColor or Color3.new(1, 1, 1)
+	tag.TextStrokeTransparency = 0.2
+	tag.Text = spec.name
+	tag.Parent = billboard
+end
+
+-- spec = { name, bodyColor, headColor, transparency?, glowColor?, tagColor? }
+-- (the color fields style the placeholder only; your rig is used as-is)
+function NpcFactory.create(spec, parent)
+	local template = AssetResolver.npcTemplate(spec.name)
+	local model
+	if template then
+		model = template:Clone()
+		model.Name = spec.name
+		for _, descendant in ipairs(model:GetDescendants()) do
+			-- never run scripts that came bundled with an imported asset
+			if descendant:IsA("BaseScript") or descendant:IsA("ModuleScript") then
+				descendant:Destroy()
+			elseif descendant:IsA("BasePart") then
+				descendant.Anchored = false
+			end
+		end
+		model.PrimaryPart = model:FindFirstChild("HumanoidRootPart")
+	else
+		model = buildPlaceholderRig(spec)
+	end
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	pcall(function()
+		humanoid.JumpHeight = 0
+	end)
+	humanoid.MaxHealth = 100000
+	humanoid.Health = humanoid.MaxHealth
+	humanoid.RequiresNeck = false
+	humanoid.AutoRotate = true
+	humanoid.BreakJointsOnDeath = false
+	humanoid.DisplayName = spec.name
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+
+	addNameTag(model, spec)
 
 	-- keep NPCs out of the player collision group
 	for _, part in ipairs(model:GetDescendants()) do

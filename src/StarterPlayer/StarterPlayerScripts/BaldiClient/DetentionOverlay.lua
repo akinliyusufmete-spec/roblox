@@ -4,6 +4,9 @@
 	Shown while LP has you in detention. The server anchors your character;
 	this overlay shows the countdown and locks the sprint key so the bar
 	doesn't drain while you stand there fuming.
+
+	Your art: AssetConfig.IMAGES.DETENTION_BACKGROUND fills the screen
+	(use a semi-transparent PNG so the player still sees the room).
 ]]
 
 local DetentionOverlay = {}
@@ -25,12 +28,7 @@ function DetentionOverlay.init(ctx)
 		Parent = playerGui,
 	})
 
-	UiKit.new("Frame", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Color3.fromRGB(20, 8, 8),
-		BackgroundTransparency = 0.45,
-		Parent = gui,
-	})
+	UiKit.backdrop(gui, ctx.assets.IMAGES.DETENTION_BACKGROUND, Color3.fromRGB(20, 8, 8), 0.45)
 
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -38,7 +36,7 @@ function DetentionOverlay.init(ctx)
 		Size = UDim2.new(0.9, 0, 0, 70),
 		Text = "DETENTION!",
 		TextColor3 = theme.red,
-		TextStrokeTransparency = 0.3,
+		TextStrokeTransparency = 0,
 		Parent = gui,
 	})
 
@@ -47,7 +45,6 @@ function DetentionOverlay.init(ctx)
 		Position = UDim2.fromScale(0.5, 0.42),
 		Size = UDim2.new(0.9, 0, 0, 28),
 		Text = '"No running in the halls."',
-		Font = Enum.Font.GothamMedium,
 		TextColor3 = theme.textDim,
 		Parent = gui,
 	})
@@ -57,7 +54,7 @@ function DetentionOverlay.init(ctx)
 		Position = UDim2.fromScale(0.5, 0.56),
 		Size = UDim2.fromOffset(220, 84),
 		Text = "15",
-		TextColor3 = theme.textPrimary,
+		TextStrokeTransparency = 0,
 		Parent = gui,
 	})
 

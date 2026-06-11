@@ -7,6 +7,11 @@
 	  - Win screen: ESCAPED! + time + best + Retry / Menu (green accent)
 	  - Lose screen: CAUGHT! + catcher + cause + Retry / Menu (red accent)
 
+	Your art (AssetConfig.IMAGES): MENU_BACKGROUND, COUNTDOWN_BACKGROUND,
+	WIN_BACKGROUND, LOSE_BACKGROUND fill each screen edge to edge (like the
+	original game's title art); PLAY_BUTTON replaces the PLAY button; PANEL
+	backs the HOW TO PLAY box.
+
 	Also orchestrates the round lifecycle on the client: shows/hides the
 	HUD, enables/disables the stamina controller, and locks the camera to
 	first person during play.
@@ -17,6 +22,7 @@ local MenuController = {}
 function MenuController.init(ctx)
 	local UiKit = require(script.Parent:WaitForChild("UiKit"))
 	local theme = UiKit.theme
+	local images = ctx.assets.IMAGES
 	local sounds = ctx.controllers.SoundController
 	local hud = ctx.controllers.HudController
 	local stamina = ctx.controllers.StaminaController
@@ -51,7 +57,8 @@ function MenuController.init(ctx)
 
 	local screens = {}
 
-	local function makeScreen(name, backgroundColor)
+	-- imageKey: AssetConfig.IMAGES entry used as the full-screen backdrop
+	local function makeScreen(name, backgroundColor, imageKey)
 		local screen = UiKit.new("CanvasGroup", {
 			Name = name,
 			Size = UDim2.fromScale(1, 1),
@@ -60,6 +67,9 @@ function MenuController.init(ctx)
 			Visible = false,
 			Parent = gui,
 		})
+		if imageKey and UiKit.hasImage(images[imageKey]) then
+			UiKit.backdrop(screen, images[imageKey])
+		end
 		screens[name] = screen
 		return screen
 	end
@@ -100,7 +110,7 @@ function MenuController.init(ctx)
 
 	-- ===================== main menu =====================
 
-	local mainMenu = makeScreen("main", theme.chalkboard)
+	local mainMenu = makeScreen("main", theme.chalkboard, "MENU_BACKGROUND")
 
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0),
@@ -108,7 +118,7 @@ function MenuController.init(ctx)
 		Size = UDim2.new(0.9, 0, 0, 84),
 		Text = ctx.config.GAME_TITLE,
 		TextColor3 = theme.accent,
-		TextStrokeTransparency = 0.4,
+		TextStrokeTransparency = 0,
 		Parent = mainMenu,
 	})
 	UiKit.label({
@@ -116,7 +126,6 @@ function MenuController.init(ctx)
 		Position = UDim2.fromScale(0.5, 0.245),
 		Size = UDim2.new(0.8, 0, 0, 24),
 		Text = ctx.config.GAME_SUBTITLE,
-		Font = Enum.Font.Gotham,
 		TextColor3 = theme.textDim,
 		Parent = mainMenu,
 	})
@@ -127,27 +136,28 @@ function MenuController.init(ctx)
 		Size = UDim2.fromOffset(260, 64),
 		Text = "PLAY",
 		Parent = mainMenu,
-	})
+	}, images.PLAY_BUTTON)
 
 	local bestTimeLabel = UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0.5),
 		Size = UDim2.new(0.8, 0, 0, 22),
 		Text = "Best time: --",
-		Font = Enum.Font.Gotham,
 		TextColor3 = theme.textDim,
 		Parent = mainMenu,
 	})
 
-	local controlsPanel = UiKit.new("Frame", {
+	local controlsPanel = UiKit.panel({
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0.58),
 		Size = UDim2.fromOffset(420, 190),
 		BackgroundColor3 = theme.panel,
 		BackgroundTransparency = 0.35,
 		Parent = mainMenu,
-		UiKit.corner(12),
-	})
+	}, images.PANEL)
+	if controlsPanel:IsA("Frame") then
+		UiKit.corner(12).Parent = controlsPanel
+	end
 	UiKit.label({
 		Position = UDim2.fromOffset(0, 8),
 		Size = UDim2.new(1, 0, 0, 24),
@@ -159,17 +169,17 @@ function MenuController.init(ctx)
 		Position = UDim2.fromOffset(24, 38),
 		Size = UDim2.new(1, -48, 1, -50),
 		Text = table.concat({
-			"Collect all 10 notebooks, then escape through the EXIT.",
+			"Collect all the notebooks, then escape through the EXIT.",
 			"WASD — move   |   Shift — sprint (drains stamina)",
 			"E — use item   |   Q — swap item slots",
 			"ChatRevive chases on sight. Don't let it touch you.",
 			"LP detains anyone he SEES moving too fast. Walk near him.",
 			"Frosty is harmless... but his chill slows you down.",
 		}, "\n"),
-		Font = Enum.Font.Gotham,
 		TextScaled = false,
 		TextSize = 15,
 		TextWrapped = true,
+		TextStrokeTransparency = 1,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextColor3 = theme.textPrimary,
@@ -178,13 +188,12 @@ function MenuController.init(ctx)
 
 	-- ===================== countdown screen =====================
 
-	local countdownScreen = makeScreen("countdown", theme.chalkboard)
+	local countdownScreen = makeScreen("countdown", theme.chalkboard, "COUNTDOWN_BACKGROUND")
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.35),
 		Size = UDim2.new(0.9, 0, 0, 48),
 		Text = "Get ready...",
-		TextColor3 = theme.textPrimary,
 		Parent = countdownScreen,
 	})
 	local countdownNumber = UiKit.label({
@@ -193,13 +202,14 @@ function MenuController.init(ctx)
 		Size = UDim2.fromOffset(200, 120),
 		Text = "3",
 		TextColor3 = theme.accent,
+		TextStrokeTransparency = 0,
 		Parent = countdownScreen,
 	})
 
 	-- ===================== end screens =====================
 
-	local function makeEndScreen(name, accent, titleText)
-		local screen = makeScreen(name, theme.chalkboard)
+	local function makeEndScreen(name, accent, titleText, imageKey)
+		local screen = makeScreen(name, theme.chalkboard, imageKey)
 		UiKit.new("Frame", { -- accent strip
 			AnchorPoint = Vector2.new(0.5, 0),
 			Position = UDim2.fromScale(0.5, 0.18),
@@ -214,7 +224,7 @@ function MenuController.init(ctx)
 			Size = UDim2.new(0.9, 0, 0, 76),
 			Text = titleText,
 			TextColor3 = accent,
-			TextStrokeTransparency = 0.4,
+			TextStrokeTransparency = 0,
 			Parent = screen,
 		})
 		local detailLabel = UiKit.label({
@@ -222,8 +232,6 @@ function MenuController.init(ctx)
 			Position = UDim2.fromScale(0.5, 0.4),
 			Size = UDim2.new(0.8, 0, 0, 30),
 			Text = "",
-			Font = Enum.Font.GothamMedium,
-			TextColor3 = theme.textPrimary,
 			Parent = screen,
 		})
 		local subLabel = UiKit.label({
@@ -231,7 +239,6 @@ function MenuController.init(ctx)
 			Position = UDim2.fromScale(0.5, 0.47),
 			Size = UDim2.new(0.8, 0, 0, 22),
 			Text = "",
-			Font = Enum.Font.Gotham,
 			TextColor3 = theme.textDim,
 			Parent = screen,
 		})
@@ -256,8 +263,8 @@ function MenuController.init(ctx)
 		return { screen = screen, detail = detailLabel, sub = subLabel, retry = retryButton, menu = menuButton }
 	end
 
-	local winScreen = makeEndScreen("win", theme.green, "ESCAPED!")
-	local loseScreen = makeEndScreen("lose", theme.red, "CAUGHT!")
+	local winScreen = makeEndScreen("win", theme.green, "ESCAPED!", "WIN_BACKGROUND")
+	local loseScreen = makeEndScreen("lose", theme.red, "CAUGHT!", "LOSE_BACKGROUND")
 
 	-- ===================== round lifecycle =====================
 
@@ -309,8 +316,8 @@ function MenuController.init(ctx)
 		end)
 	end)
 
-	ctx.remotes.GameStarted.OnClientEvent:Connect(function()
-		hud.resetForRound(ctx.config.NOTEBOOK_SPAWN_COUNT)
+	ctx.remotes.GameStarted.OnClientEvent:Connect(function(notebooksTotal)
+		hud.resetForRound(notebooksTotal or ctx.config.NOTEBOOK_SPAWN_COUNT)
 		enterRound()
 	end)
 

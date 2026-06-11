@@ -3,19 +3,24 @@
 
 	Shared behaviour for all three characters: pathfinding locomotion,
 	roaming between waypoints, line-of-sight raycasts, stun/knockback
-	(BSODA) and slow (Frosty) effects, and reset between rounds.
+	(BSODA) and slow (Frosty) effects, animation hookup, and reset
+	between rounds.
 
-	Per the plan, the three AIs only differ in WHAT triggers a new path and
-	WHAT the target is — that difference lives in ChatReviveAI / LpAI /
-	FrostyAI; everything mechanical lives here.
+	The three AIs only differ in WHAT triggers a new path and WHAT the
+	target is — that difference lives in ChatReviveAI / LpAI / FrostyAI;
+	everything mechanical lives here.
 ]]
 
 local PathfindingService = game:GetService("PathfindingService")
 
+local NpcAnimator = require(script.Parent.NpcAnimator)
+
 local NpcBase = {}
 NpcBase.__index = NpcBase
 
-function NpcBase.new(ctx, model, spawnCFrame)
+-- chaseAnimThreshold: WalkSpeed above which the rig's "Chase" animation
+-- plays (omit for characters that never chase).
+function NpcBase.new(ctx, model, spawnCFrame, chaseAnimThreshold)
 	local self = setmetatable({}, NpcBase)
 	self.ctx = ctx
 	self.model = model
@@ -29,6 +34,9 @@ function NpcBase.new(ctx, model, spawnCFrame)
 	self.slowMultiplier = 1
 	self.desiredSpeed = 0
 	self.rng = Random.new()
+
+	-- plays the Animations folder inside your rig, if present
+	self.animator = NpcAnimator.attach(model, chaseAnimThreshold)
 
 	-- raycast params for sight checks: ignore everything that isn't level
 	-- geometry or the player being checked
@@ -76,6 +84,10 @@ function NpcBase:resetToSpawn()
 	self.slowUntil = 0
 	self.slowMultiplier = 1
 	self:setPaused(true)
+	local flash = self.model:FindFirstChild("StunFlash")
+	if flash then
+		flash:Destroy()
+	end
 	self.model:PivotTo(self.spawnCFrame)
 	self.root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 end
@@ -108,7 +120,9 @@ function NpcBase:applySlow(multiplier, duration)
 	end)
 end
 
--- BSODA hit: knock back and freeze in place for a few seconds
+-- BSODA hit: knock back and freeze in place for a few seconds.
+-- The white flash is a Highlight, so it works on any rig (yours or the
+-- placeholder) without touching part colors.
 function NpcBase:stun(duration, pushDirection)
 	local cfg = self.ctx.config.BSODA_PROJECTILE
 	local alreadyStunned = self:isStunned()
@@ -116,25 +130,18 @@ function NpcBase:stun(duration, pushDirection)
 	self.humanoid.WalkSpeed = 0
 	self.humanoid:MoveTo(self.root.Position)
 
-	-- white flash while stunned; a second hit while flashed must not capture
-	-- the flash color as the "original", so only the first hit manages colors
 	if not alreadyStunned then
-		local originalColors = {}
-		for _, part in ipairs(self.model:GetChildren()) do
-			if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-				originalColors[part] = part.Color
-				part.Color = Color3.fromRGB(230, 230, 240)
-			end
-		end
+		local flash = Instance.new("Highlight")
+		flash.Name = "StunFlash"
+		flash.FillColor = Color3.fromRGB(235, 235, 245)
+		flash.FillTransparency = 0.25
+		flash.OutlineTransparency = 0.6
+		flash.Parent = self.model
 		task.spawn(function()
 			while self:isStunned() do
 				task.wait(0.1)
 			end
-			for part, color in pairs(originalColors) do
-				if part.Parent then
-					part.Color = color
-				end
-			end
+			flash:Destroy()
 			self:applySpeed()
 		end)
 	end

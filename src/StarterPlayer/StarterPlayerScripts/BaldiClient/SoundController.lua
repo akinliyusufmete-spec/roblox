@@ -1,8 +1,11 @@
 --[[
 	SoundController (ModuleScript, StarterPlayerScripts.BaldiClient.SoundController)
-	UI / feedback sounds built only from rbxasset:// files that ship with the
-	engine, so nothing depends on marketplace assets. Every play is wrapped
-	in pcall — a missing sound never breaks gameplay.
+
+	UI / feedback sounds. Each named sound checks AssetConfig.SOUNDS first —
+	paste your own sound id there and it replaces the built-in placeholder
+	(placeholders are rbxasset:// files that ship with the engine, so
+	nothing depends on marketplace assets). Every play is wrapped in
+	pcall — a missing sound never breaks gameplay.
 ]]
 
 local SoundService = game:GetService("SoundService")
@@ -21,29 +24,42 @@ local LIBRARY = {
 	detention = { id = "rbxasset://sounds/snap.mp3", speed = 0.35, volume = 0.8 },
 	frost = { id = "rbxasset://sounds/swoosh.mp3", speed = 0.6, volume = 0.7 },
 	use = { id = "rbxasset://sounds/swoosh.mp3", speed = 1.2, volume = 0.6 },
+	win = { id = "", speed = 1.0, volume = 0.8 }, -- placeholder is the jingle below
 }
 
 function SoundController.init(ctx)
 	local self = {}
+	local overrides = ctx.assets.SOUNDS
 
 	function self.play(name, pitchOverride)
 		local entry = LIBRARY[name]
 		if not entry then
 			return
 		end
+		local override = overrides[name]
+		local custom = override and override ~= ""
+		local id = custom and override or entry.id
+		if id == "" then
+			return
+		end
 		pcall(function()
 			local sound = Instance.new("Sound")
-			sound.SoundId = entry.id
+			sound.SoundId = id
 			sound.Volume = entry.volume
-			sound.PlaybackSpeed = pitchOverride or entry.speed
+			-- your sound plays at its natural pitch unless a pitch is forced
+			sound.PlaybackSpeed = pitchOverride or (custom and 1 or entry.speed)
 			sound.Parent = SoundService
 			sound:Play()
-			Debris:AddItem(sound, 4)
+			Debris:AddItem(sound, 6)
 		end)
 	end
 
-	-- little rising arpeggio for the win screen
+	-- win fanfare: your SOUNDS.win asset, or a little rising arpeggio
 	function self.winJingle()
+		if overrides.win and overrides.win ~= "" then
+			self.play("win")
+			return
+		end
 		task.spawn(function()
 			for _, pitch in ipairs({ 1.0, 1.26, 1.5 }) do
 				self.play("collect", pitch)

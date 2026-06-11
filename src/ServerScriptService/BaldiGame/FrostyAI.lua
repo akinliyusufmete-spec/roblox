@@ -9,6 +9,9 @@
 	    and shows the frost vignette). Per-player cooldown so it doesn't
 	    re-trigger every frame.
 	  - Optionally chills other NPCs that wander too close (SLOWS_NPCS).
+
+	Custom rig: ReplicatedStorage/BaldiAssets/Npcs/Frosty
+	(the glow/transparency styling below applies to the placeholder only)
 ]]
 
 local RunService = game:GetService("RunService")
@@ -25,7 +28,7 @@ function FrostyAI.init(ctx)
 	local cfg = ctx.config.NPC.FROSTY
 	local self = { ctx = ctx, cfg = cfg }
 
-	local model = NpcFactory.createRig({
+	local model = NpcFactory.create({
 		name = cfg.NAME,
 		bodyColor = COLOR_BODY,
 		headColor = COLOR_HEAD,
@@ -33,7 +36,7 @@ function FrostyAI.init(ctx)
 		glowColor = Color3.fromRGB(150, 220, 255),
 		tagColor = Color3.fromRGB(170, 230, 255),
 	}, ctx.map.npcFolder)
-	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.FROSTY)
+	local base = NpcBase.new(ctx, model, ctx.map.npcSpawns.FROSTY) -- never chases
 	self.base = base
 	self.model = model
 

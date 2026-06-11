@@ -1,17 +1,20 @@
 --[[
-	MapBuilder (ModuleScript, ServerScriptService.BaldiGame.MapBuilder)
+	PlaceholderMap (ModuleScript, ServerScriptService.BaldiGame.PlaceholderMap)
 
-	Procedurally generates the entire schoolhouse at server startup so the game
-	is playable in any empty baseplate place with zero manual Studio work:
+	Generates a complete stand-in school so the game is playable before
+	your real map exists. It produces EXACTLY the folder contract that
+	MapResolver reads — build your own Workspace/BaldiMap with the same
+	structure and this module is never used:
 
-	  - hallway ring + 4 classrooms + library + gym + detention room
-	  - entrance corridor with the (locked) EXIT door
-	  - 23 invisible NotebookSpawn nodes, tagged via CollectionService
-	  - AI waypoints, NPC spawn markers, vending machines, lobby
-
-	If a folder named "BaldiMap" already exists in Workspace (e.g. you built a
-	custom school by hand), generation is skipped and your map is used instead.
-	Any extra parts you tag "NotebookSpawn" in Studio are picked up too.
+	  BaldiMap
+	  ├── Geometry        (walls, floors, furniture, ExitDoor, LobbySpawn,
+	  │                    VendingMachine_BSODA, VendingMachine_ZESTY)
+	  ├── Markers         (RoundSpawn, DetentionSpot, ChatReviveSpawn,
+	  │                    LpSpawn, FrostySpawn — invisible parts)
+	  ├── Waypoints       (invisible parts the NPCs roam between)
+	  ├── NotebookSpawns  (invisible parts; 10 are picked per round)
+	  ├── NickelSpawns    (invisible parts; starter coins)
+	  └── ItemSpawns      (invisible parts named BSODA / ZESTY)
 
 	Layout (top-down, studs). Floor top sits at Y = 0.
 	  School rectangle: X -96..96, Z -72..72
@@ -22,11 +25,9 @@
 	  Entrance corridor X -6..6, Z -72..-48 with the EXIT door at Z -72
 ]]
 
-local CollectionService = game:GetService("CollectionService")
-local PhysicsService = game:GetService("PhysicsService")
 local Lighting = game:GetService("Lighting")
 
-local MapBuilder = {}
+local PlaceholderMap = {}
 
 local WALL_HEIGHT = 14
 local WALL_THICKNESS = 1
@@ -55,11 +56,11 @@ local function basePart(props)
 	return part
 end
 
-local function makeInvisibleNode(name, position, parent)
+local function invisibleNode(name, cframe, parent)
 	local part = basePart({
 		Name = name,
 		Size = Vector3.new(1, 1, 1),
-		CFrame = CFrame.new(position),
+		CFrame = cframe,
 		Transparency = 1,
 		CanCollide = false,
 		CanQuery = false,
@@ -82,7 +83,7 @@ local function surfaceText(part, face, text, textColor, bgColor)
 	if bgColor then
 		label.BackgroundColor3 = bgColor
 	end
-	label.Font = Enum.Font.GothamBold
+	label.Font = Enum.Font.Cartoon
 	label.TextScaled = true
 	label.TextColor3 = textColor or Color3.new(1, 1, 1)
 	label.Text = text
@@ -100,7 +101,6 @@ local function buildWall(parent, x1, z1, x2, z2, gaps)
 	local from = horizontal and math.min(x1, x2) or math.min(z1, z2)
 	local to = horizontal and math.max(x1, x2) or math.max(z1, z2)
 
-	-- collect cut points, sorted
 	local cuts = {}
 	for _, gap in ipairs(gaps) do
 		table.insert(cuts, { lo = gap.center - gap.width / 2, hi = gap.center + gap.width / 2 })
@@ -199,6 +199,8 @@ local function buildLight(parent, x, z)
 	fixture.Parent = parent
 end
 
+-- Plain machine body; MapResolver attaches the ProximityPrompt (same path
+-- it uses for hand-built machines).
 local function buildVendingMachine(parent, x, z, itemDef)
 	local machine = basePart({
 		Name = "VendingMachine_" .. itemDef.id,
@@ -209,64 +211,33 @@ local function buildVendingMachine(parent, x, z, itemDef)
 	})
 	surfaceText(machine, Enum.NormalId.Front, itemDef.displayName, Color3.new(1, 1, 1), Color3.fromRGB(30, 30, 35))
 	surfaceText(machine, Enum.NormalId.Back, itemDef.displayName, Color3.new(1, 1, 1), Color3.fromRGB(30, 30, 35))
-
-	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Browse"
-	prompt.ObjectText = itemDef.displayName .. " Machine"
-	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = 5
-	prompt.RequiresLineOfSight = false
-	prompt.Parent = machine
-
 	machine.Parent = parent
-	return machine, prompt
 end
 
 -- ===================== main build =====================
 
-function MapBuilder.build(ctx)
-	local config = ctx.config
-
-	-- Collision groups: players never physically collide with NPCs, so a
-	-- roaming character can never wedge a player into a doorway.
-	pcall(function()
-		PhysicsService:RegisterCollisionGroup("BaldiNpc")
-		PhysicsService:RegisterCollisionGroup("BaldiPlayer")
-		PhysicsService:CollisionGroupSetCollidable("BaldiNpc", "BaldiPlayer", false)
-	end)
-
-	local existing = workspace:FindFirstChild("BaldiMap")
-	if existing then
-		-- A hand-built map is present; just make sure runtime folders exist.
-		local map = MapBuilder.collectExistingMap(existing)
-		ctx.map = map
-		return map
-	end
-
+function PlaceholderMap.generate(config)
 	local root = Instance.new("Folder")
 	root.Name = "BaldiMap"
 
 	local geometry = Instance.new("Folder")
 	geometry.Name = "Geometry"
 	geometry.Parent = root
+	local markers = Instance.new("Folder")
+	markers.Name = "Markers"
+	markers.Parent = root
 	local waypoints = Instance.new("Folder")
 	waypoints.Name = "Waypoints"
 	waypoints.Parent = root
 	local spawnNodes = Instance.new("Folder")
 	spawnNodes.Name = "NotebookSpawns"
 	spawnNodes.Parent = root
-	local notebooks = Instance.new("Folder")
-	notebooks.Name = "Notebooks"
-	notebooks.Parent = root
-	local pickups = Instance.new("Folder")
-	pickups.Name = "Pickups"
-	pickups.Parent = root
-	local npcFolder = Instance.new("Folder")
-	npcFolder.Name = "Npcs"
-	npcFolder.Parent = root
-	local projectiles = Instance.new("Folder")
-	projectiles.Name = "Projectiles"
-	projectiles.Parent = root
+	local nickelSpawns = Instance.new("Folder")
+	nickelSpawns.Name = "NickelSpawns"
+	nickelSpawns.Parent = root
+	local itemSpawns = Instance.new("Folder")
+	itemSpawns.Name = "ItemSpawns"
+	itemSpawns.Parent = root
 
 	-- ---------- floor & ceiling ----------
 	local floor = basePart({
@@ -428,11 +399,15 @@ function MapBuilder.build(ctx)
 	Lighting.Brightness = 2
 
 	-- ---------- vending machines (south hall, against the central block) ----------
-	local vendingMachines = {}
-	local bsodaMachine, bsodaPrompt = buildVendingMachine(geometry, -16, 38.2, config.ITEMS.BSODA)
-	local zestyMachine, zestyPrompt = buildVendingMachine(geometry, 16, 38.2, config.ITEMS.ZESTY)
-	table.insert(vendingMachines, { part = bsodaMachine, prompt = bsodaPrompt, itemId = "BSODA" })
-	table.insert(vendingMachines, { part = zestyMachine, prompt = zestyPrompt, itemId = "ZESTY" })
+	buildVendingMachine(geometry, -16, 38.2, config.ITEMS.BSODA)
+	buildVendingMachine(geometry, 16, 38.2, config.ITEMS.ZESTY)
+
+	-- ---------- markers (the contract MapResolver reads) ----------
+	invisibleNode("RoundSpawn", CFrame.lookAt(Vector3.new(0, 1, -58), Vector3.new(0, 1, -30)), markers)
+	invisibleNode("DetentionSpot", CFrame.lookAt(Vector3.new(0, 1, -24), Vector3.new(0, 1, -36)), markers)
+	invisibleNode("ChatReviveSpawn", CFrame.new(90, 1, 0), markers) -- library east end
+	invisibleNode("LpSpawn", CFrame.new(-75, 1, 0), markers) -- gym center
+	invisibleNode("FrostySpawn", CFrame.new(0, 1, 42), markers) -- south hall
 
 	-- ---------- AI waypoints ----------
 	local waypointSpots = {
@@ -445,7 +420,7 @@ function MapBuilder.build(ctx)
 		{ 0, -60 }, -- entrance corridor
 	}
 	for index, spot in ipairs(waypointSpots) do
-		makeInvisibleNode("Waypoint" .. index, Vector3.new(spot[1], 1, spot[2]), waypoints)
+		invisibleNode("Waypoint" .. index, CFrame.new(spot[1], 1, spot[2]), waypoints)
 	end
 
 	-- ---------- notebook spawn nodes (23 total, 10 picked per round) ----------
@@ -466,9 +441,16 @@ function MapBuilder.build(ctx)
 		{ -50, -44 }, { 50, -44 }, { -50, 44 }, { 50, 44 },
 	}
 	for index, spot in ipairs(nodeSpots) do
-		local node = makeInvisibleNode("NotebookSpawn" .. index, Vector3.new(spot[1], 1.5, spot[2]), spawnNodes)
-		CollectionService:AddTag(node, "NotebookSpawn")
+		invisibleNode("NotebookSpawn" .. index, CFrame.new(spot[1], 1.5, spot[2]), spawnNodes)
 	end
+
+	-- ---------- nickel / item spawn points ----------
+	local nickelSpots = { { -30, -42 }, { 30, 42 }, { 48, 0 }, { -48, 20 } }
+	for index, spot in ipairs(nickelSpots) do
+		invisibleNode("NickelSpawn" .. index, CFrame.new(spot[1], 1.5, spot[2]), nickelSpawns)
+	end
+	invisibleNode("BSODA", CFrame.new(-22, 1.5, -60), itemSpawns) -- classroom A
+	invisibleNode("ZESTY", CFrame.new(18, 1.5, 60), itemSpawns) -- classroom D
 
 	-- ---------- lobby (menu area, away from the school) ----------
 	local lobbyFloor = basePart({
@@ -505,85 +487,7 @@ function MapBuilder.build(ctx)
 	spawnLocation.Parent = geometry
 
 	root.Parent = workspace
-
-	ctx.map = {
-		root = root,
-		geometry = geometry,
-		waypointsFolder = waypoints,
-		spawnNodesFolder = spawnNodes,
-		notebooksFolder = notebooks,
-		pickupsFolder = pickups,
-		npcFolder = npcFolder,
-		projectilesFolder = projectiles,
-		exitDoor = exitDoor,
-		lobbySpawn = spawnLocation,
-		-- players start a round at the entrance corridor, facing the school
-		roundSpawnCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -58), Vector3.new(0, 3.5, -30)),
-		detentionCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -24), Vector3.new(0, 3.5, -36)),
-		vendingMachines = vendingMachines,
-		npcSpawns = {
-			CHATREVIVE = CFrame.new(90, 3, 0), -- library east end, behind the shelves
-			LP = CFrame.new(-75, 3, 0), -- gym center
-			FROSTY = CFrame.new(0, 3, 42), -- south hall
-		},
-		nickelSpawns = {
-			Vector3.new(-30, 1.5, -42), Vector3.new(30, 1.5, 42),
-			Vector3.new(48, 1.5, 0), Vector3.new(-48, 1.5, 20),
-		},
-		itemSpawns = {
-			BSODA = Vector3.new(-22, 1.5, -60), -- classroom A
-			ZESTY = Vector3.new(18, 1.5, 60), -- classroom D
-		},
-	}
-	return ctx.map
+	return root
 end
 
--- Used when a hand-built BaldiMap folder already exists in Workspace.
--- Expects the same child folder names; creates missing runtime folders.
-function MapBuilder.collectExistingMap(root)
-	local function ensureFolder(name)
-		local folder = root:FindFirstChild(name)
-		if not folder then
-			folder = Instance.new("Folder")
-			folder.Name = name
-			folder.Parent = root
-		end
-		return folder
-	end
-
-	local geometry = ensureFolder("Geometry")
-	local map = {
-		root = root,
-		geometry = geometry,
-		waypointsFolder = ensureFolder("Waypoints"),
-		spawnNodesFolder = ensureFolder("NotebookSpawns"),
-		notebooksFolder = ensureFolder("Notebooks"),
-		pickupsFolder = ensureFolder("Pickups"),
-		npcFolder = ensureFolder("Npcs"),
-		projectilesFolder = ensureFolder("Projectiles"),
-		exitDoor = geometry:FindFirstChild("ExitDoor", true),
-		lobbySpawn = geometry:FindFirstChild("LobbySpawn", true),
-		roundSpawnCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -58), Vector3.new(0, 3.5, -30)),
-		detentionCFrame = CFrame.lookAt(Vector3.new(0, 3.5, -24), Vector3.new(0, 3.5, -36)),
-		vendingMachines = {},
-		npcSpawns = {
-			CHATREVIVE = CFrame.new(90, 3, 0),
-			LP = CFrame.new(-75, 3, 0),
-			FROSTY = CFrame.new(0, 3, 42),
-		},
-		nickelSpawns = { Vector3.new(-30, 1.5, -42), Vector3.new(30, 1.5, 42) },
-		itemSpawns = {},
-	}
-	for _, child in ipairs(geometry:GetDescendants()) do
-		if child:IsA("BasePart") and child.Name:match("^VendingMachine_") then
-			local itemId = child.Name:gsub("^VendingMachine_", "")
-			local prompt = child:FindFirstChildOfClass("ProximityPrompt")
-			if prompt then
-				table.insert(map.vendingMachines, { part = child, prompt = prompt, itemId = itemId })
-			end
-		end
-	end
-	return map
-end
-
-return MapBuilder
+return PlaceholderMap

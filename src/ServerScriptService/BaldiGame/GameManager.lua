@@ -6,12 +6,10 @@
 	  IDLE ── Play pressed ──> COUNTDOWN (3s, players anchored at entrance)
 	       <── all players out ── ACTIVE (notebooks spawned, NPCs gated)
 
-	Activation gating per the plan:
-	  0 notebooks  -> all NPCs frozen
-	  1 notebook   -> all NPCs activate (roam loops start)
-	  10 notebooks -> the main chaser enrages + the exit opens
-	                  (the plan's "Silver enrages" trigger — wired to
-	                   ChatRevive since it is the primary antagonist)
+	Activation gating:
+	  0 notebooks    -> all NPCs frozen
+	  1 notebook     -> all NPCs activate (roam loops start)
+	  last notebook  -> the main chaser enrages + the exit opens
 
 	Per-player outcomes:
 	  - Caught by ChatRevive -> lose screen, a Nickel drops at the spot.
@@ -160,7 +158,7 @@ function GameManager.init(ctx)
 			participants[player] = nil
 			return
 		end
-		remotes.GameStarted:FireClient(player)
+		remotes.GameStarted:FireClient(player, notebooksTotal)
 		remotes.NotebookCollected:FireClient(player, notebooksCollected, notebooksTotal)
 		if ctx.exitDoor.open then
 			remotes.PhaseChanged:FireClient(player, "EXIT_OPEN")
@@ -193,14 +191,14 @@ function GameManager.init(ctx)
 				if hrp then
 					hrp.Anchored = false
 				end
-				remotes.GameStarted:FireClient(player)
+				remotes.GameStarted:FireClient(player, notebooksTotal)
 				remotes.NotebookCollected:FireClient(player, notebooksCollected, notebooksTotal)
 			end
 			checkRoundEnd() -- everyone may have left during the countdown
 		end)
 	end
 
-	-- ===================== plan step 6: notebook -> HUD + gating =====================
+	-- ===================== notebook -> HUD + gating =====================
 
 	function self.onNotebookCollected(byPlayer)
 		notebooksCollected = notebooksCollected + 1
