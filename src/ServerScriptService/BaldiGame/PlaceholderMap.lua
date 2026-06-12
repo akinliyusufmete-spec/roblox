@@ -415,6 +415,8 @@ function PlaceholderMap.generate(config)
 	invisibleNode("LpSpawn", CFrame.new(-75, 1, 0), markers) -- gym center
 	invisibleNode("FrostySpawn", CFrame.new(0, 1, 42), markers) -- south hall
 	invisibleNode("SilverSpawn", CFrame.new(30, 1, -60), markers) -- classroom B
+	-- the main menu's camera shot: high three-quarter view of the school
+	invisibleNode("MENU_CAMERA", CFrame.lookAt(Vector3.new(85, 48, 85), Vector3.new(0, 4, 0)), markers)
 
 	-- ---------- sweep routes (Guidelines: north hall, Sai: south hall) ----------
 	local guidelinesRoute = Instance.new("Folder")

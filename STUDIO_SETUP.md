@@ -88,7 +88,10 @@ Workspace
     │   ├── ChatReviveSpawn   ┐
     │   ├── LpSpawn           ├ where each character stands at round start
     │   ├── FrostySpawn       │
-    │   └── SilverSpawn       ┘
+    │   ├── SilverSpawn       ┘
+    │   └── MENU_CAMERA       optional; the main menu's camera sits on this
+    │                         part, looking the way its front face points —
+    │                         move/rotate it in Studio to frame the shot
     ├── SweepRoutes       ← optional; one folder per sweeper holding its route:
     │   ├── Guidelines        parts named 1, 2, 3... walked in order, then
     │   └── Sai               reversed. 2 parts = a straight hallway run.

@@ -56,35 +56,41 @@ function MenuController.init(ctx)
 		end
 	end
 
-	-- A slow orbit of the school behind the main menu, in place of the player
-	-- camera. Runs only while the menu is up; the round camera takes over the
-	-- moment play starts.
+	-- While the main menu is up, the camera sits on the MENU_CAMERA marker
+	-- part, looking the way the part faces. Held every frame (a respawn
+	-- resets the camera otherwise); released the moment play starts.
 	local menuCameraConn = nil
 	local function menuCamera(enabled)
 		local cfg = ctx.config.MENU_CAMERA
 		local camera = Workspace.CurrentCamera
 		if enabled and cfg then
 			if menuCameraConn then
-				return -- already orbiting
+				return -- already holding the shot
 			end
-			if camera then
-				camera.CameraType = Enum.CameraType.Scriptable
-				camera.FieldOfView = cfg.FIELD_OF_VIEW or 70
-			end
-			local angle = 0
-			menuCameraConn = RunService.RenderStepped:Connect(function(dt)
+			local part = nil
+			local nextSearch = 0
+			menuCameraConn = RunService.RenderStepped:Connect(function()
 				local cam = Workspace.CurrentCamera
 				if not cam then
 					return
 				end
+				if not part or not part:IsDescendantOf(Workspace) then
+					-- the map may build after the menu first shows; keep
+					-- looking (cheaply) until the marker exists
+					if os.clock() < nextSearch then
+						return
+					end
+					nextSearch = os.clock() + 1
+					local found = Workspace:FindFirstChild(cfg.PART_NAME or "MENU_CAMERA", true)
+					if found and found:IsA("BasePart") then
+						part = found
+					else
+						return -- no marker: leave the camera alone
+					end
+				end
 				cam.CameraType = Enum.CameraType.Scriptable
-				angle = angle + dt * (cfg.ORBIT_SPEED or 0)
-				local position = cfg.FOCUS + Vector3.new(
-					math.cos(angle) * cfg.RADIUS,
-					cfg.HEIGHT,
-					math.sin(angle) * cfg.RADIUS
-				)
-				cam.CFrame = CFrame.new(position, cfg.FOCUS)
+				cam.FieldOfView = cfg.FIELD_OF_VIEW or 70
+				cam.CFrame = part.CFrame
 			end)
 		else
 			if menuCameraConn then

@@ -134,7 +134,8 @@ StarterPlayer
 Workspace
 └── BaldiMap                   (Folder)        — YOUR map (or the generated placeholder)
     ├── Geometry               — your school; ExitDoor, LobbySpawn, vending machines
-    ├── Markers                — RoundSpawn, DetentionSpot, 4 NPC spawn points
+    ├── Markers                — RoundSpawn, DetentionSpot, 4 NPC spawn points,
+    │                            MENU_CAMERA (main menu camera shot)
     ├── SweepRoutes            — optional Guidelines / Sai route folders
     ├── Waypoints              — parts the NPCs roam between
     ├── NotebookSpawns         — parts where notebooks may appear (10 picked/round)

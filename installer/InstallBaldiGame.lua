@@ -151,15 +151,13 @@ GameConfig.GAME_SUBTITLE = "a Baldi's Basics inspired fan game"
 GameConfig.COUNTDOWN_SECONDS = 3
 GameConfig.FIRST_PERSON = true -- lock camera to first person during a round
 
--- Menu camera: instead of a flat image, the main menu shows a slow orbit
--- of the school (the 3D scene shows through the transparent menu unless you
--- set IMAGES.MENU_BACKGROUND). Tune FOCUS to whatever you want it circling
--- — the map center, the exit door, a character statue, etc.
+-- Menu camera: place a part named MENU_CAMERA anywhere in your map and the
+-- main menu's camera snaps to it, looking the way the part's front face
+-- points. Make it Anchored, CanCollide off, Transparency 1, then move and
+-- rotate it in Studio until the shot frames what you want (the school, a
+-- statue, anything). No part in the map = the camera is left alone.
 GameConfig.MENU_CAMERA = {
-	FOCUS = Vector3.new(0, 4, 0), -- the point the camera looks at and orbits
-	RADIUS = 70, -- horizontal distance from FOCUS
-	HEIGHT = 34, -- how far above FOCUS the camera sits
-	ORBIT_SPEED = 0.06, -- radians/sec; 0 holds a still shot
+	PART_NAME = "MENU_CAMERA",
 	FIELD_OF_VIEW = 70,
 }
 
@@ -3939,6 +3937,8 @@ function PlaceholderMap.generate(config)
 	invisibleNode("LpSpawn", CFrame.new(-75, 1, 0), markers) -- gym center
 	invisibleNode("FrostySpawn", CFrame.new(0, 1, 42), markers) -- south hall
 	invisibleNode("SilverSpawn", CFrame.new(30, 1, -60), markers) -- classroom B
+	-- the main menu's camera shot: high three-quarter view of the school
+	invisibleNode("MENU_CAMERA", CFrame.lookAt(Vector3.new(85, 48, 85), Vector3.new(0, 4, 0)), markers)
 
 	-- ---------- sweep routes (Guidelines: north hall, Sai: south hall) ----------
 	local guidelinesRoute = Instance.new("Folder")
@@ -5550,35 +5550,41 @@ function MenuController.init(ctx)
 		end
 	end
 
-	-- A slow orbit of the school behind the main menu, in place of the player
-	-- camera. Runs only while the menu is up; the round camera takes over the
-	-- moment play starts.
+	-- While the main menu is up, the camera sits on the MENU_CAMERA marker
+	-- part, looking the way the part faces. Held every frame (a respawn
+	-- resets the camera otherwise); released the moment play starts.
 	local menuCameraConn = nil
 	local function menuCamera(enabled)
 		local cfg = ctx.config.MENU_CAMERA
 		local camera = Workspace.CurrentCamera
 		if enabled and cfg then
 			if menuCameraConn then
-				return -- already orbiting
+				return -- already holding the shot
 			end
-			if camera then
-				camera.CameraType = Enum.CameraType.Scriptable
-				camera.FieldOfView = cfg.FIELD_OF_VIEW or 70
-			end
-			local angle = 0
-			menuCameraConn = RunService.RenderStepped:Connect(function(dt)
+			local part = nil
+			local nextSearch = 0
+			menuCameraConn = RunService.RenderStepped:Connect(function()
 				local cam = Workspace.CurrentCamera
 				if not cam then
 					return
 				end
+				if not part or not part:IsDescendantOf(Workspace) then
+					-- the map may build after the menu first shows; keep
+					-- looking (cheaply) until the marker exists
+					if os.clock() < nextSearch then
+						return
+					end
+					nextSearch = os.clock() + 1
+					local found = Workspace:FindFirstChild(cfg.PART_NAME or "MENU_CAMERA", true)
+					if found and found:IsA("BasePart") then
+						part = found
+					else
+						return -- no marker: leave the camera alone
+					end
+				end
 				cam.CameraType = Enum.CameraType.Scriptable
-				angle = angle + dt * (cfg.ORBIT_SPEED or 0)
-				local position = cfg.FOCUS + Vector3.new(
-					math.cos(angle) * cfg.RADIUS,
-					cfg.HEIGHT,
-					math.sin(angle) * cfg.RADIUS
-				)
-				cam.CFrame = CFrame.new(position, cfg.FOCUS)
+				cam.FieldOfView = cfg.FIELD_OF_VIEW or 70
+				cam.CFrame = part.CFrame
 			end)
 		else
 			if menuCameraConn then
