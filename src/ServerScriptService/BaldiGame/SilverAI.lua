@@ -85,6 +85,9 @@ function SilverAI.init(ctx)
 			lastHitAt = 0,
 			releaseAt = os.clock() + cfg.GRAB_MAX_SECONDS,
 		}
+		if ctx.manager.recordGrab then
+			ctx.manager.recordGrab(player) -- report card blemish
+		end
 		hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 		hrp.Anchored = true
 

@@ -108,6 +108,8 @@ AssetConfig.IMAGES = {
 --   whistle = LP's alert when he starts chasing
 --   sweep   = looping noise a sweeper makes mid-sweep
 --   alarm   = the placed Alarm Clock's ringing loop
+--   tension = optional looping dread track that swells as ChatRevive
+--             closes in (blank = a built-in heartbeat thump instead)
 AssetConfig.SOUNDS = {
 	click = "",
 	collect = "",
@@ -126,6 +128,7 @@ AssetConfig.SOUNDS = {
 	whistle = "",
 	sweep = "",
 	alarm = "",
+	tension = "",
 }
 
 return AssetConfig
@@ -164,6 +167,23 @@ GameConfig.MENU_CAMERA = {
 -- ========== Notebooks ==========
 GameConfig.NOTEBOOK_SPAWN_COUNT = 10 -- how many notebooks are placed per round
 GameConfig.NOTEBOOK_PROMPT_DISTANCE = 8
+
+-- Sweet Spot minigame: E on a notebook opens a lock face instead of
+-- collecting instantly. Rotate the pointer with E / Q; the closer it gets
+-- to the hidden sweet spot the harder the face shakes and glows. Hold the
+-- pointer on the spot to click a stage; clear every stage to collect.
+-- F (or the X button) abandons the notebook — you stay vulnerable the
+-- whole time, so pick your moment.
+GameConfig.NOTEBOOK_MINIGAME = {
+	ENABLED = true, -- false = E collects instantly, like before
+	STAGES = 2, -- sweet spots per notebook
+	ROTATE_SPEED = 150, -- pointer degrees/sec while E or Q is held
+	HIT_WINDOW = 14, -- degrees either side of the spot that count as "on it"
+	WARM_RANGE = 90, -- shake/color feedback starts ramping inside this arc
+	HOLD_SECONDS = 0.45, -- stay on the spot this long to click the stage
+	MAX_SECONDS = 25, -- server abandons a session after this long
+	CANCEL_DISTANCE = 12, -- walking this far from the notebook abandons it
+}
 
 -- ========== Player movement / stamina ==========
 GameConfig.PLAYER = {
@@ -232,6 +252,31 @@ GameConfig.BSODA_PROJECTILE = {
 
 GameConfig.ALARM_CLOCK = {
 	RING_SECONDS = 12, -- how long a placed alarm distracts ChatRevive
+}
+
+-- ========== Feel & polish ==========
+-- Proximity dread: a heartbeat thump that quickens and swells as
+-- ChatRevive closes in (or your own looping track via SOUNDS.tension).
+GameConfig.TENSION = {
+	RANGE = 50, -- audible within this many studs of ChatRevive
+	MAX_INTERVAL = 1.15, -- seconds between thumps at the edge of RANGE
+	MIN_INTERVAL = 0.32, -- seconds between thumps right on top of you
+	MAX_VOLUME = 0.9,
+}
+
+-- End-of-round report card. Your escape time sets the base grade (first
+-- row the time fits); every detention and every two Silver grabs knock it
+-- down a step. Losing is always an F.
+GameConfig.GRADES = {
+	TIME_GRADES = {
+		{ 150, "A+" },
+		{ 210, "A" },
+		{ 280, "B" },
+		{ 360, "C" },
+		{ 480, "D" },
+	}, -- slower than the last row = F (you escaped... technically)
+	DETENTION_PENALTY = 1, -- grade steps lost per detention
+	GRAB_PENALTY = 1, -- grade steps lost per two Silver grabs
 }
 
 -- ========== NPCs ==========
@@ -342,6 +387,7 @@ GameConfig.REMOTE_NAMES = {
 	"BuyItem",
 	"SilverHit", -- one successful timing hit in Silver's grab minigame
 	"SilverEscape", -- "use my scissors" while grabbed
+	"NotebookMinigameAction", -- "done" / "cancel" from the sweet-spot minigame
 	-- server -> client
 	"GameCountdown",
 	"GameStarted",
@@ -362,6 +408,7 @@ GameConfig.REMOTE_NAMES = {
 	"SilverGrab", -- you've been grabbed: open the minigame
 	"SilverReleased", -- grab over: close it
 	"SweptPush", -- a sweeper is carrying you: apply the push client-side
+	"NotebookMinigame", -- open the sweet-spot lock face (nil = close it)
 }
 
 return GameConfig
@@ -893,6 +940,9 @@ function DetentionSystem.init(ctx)
 		hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 		hrp.Anchored = true
 		ctx.remotes.SendToDetention:FireClient(player, seconds, byName)
+		if ctx.manager and ctx.manager.recordDetention then
+			ctx.manager.recordDetention(player) -- report card blemish
+		end
 
 		task.delay(seconds, function()
 			release(player)
@@ -1173,6 +1223,51 @@ function GameManager.init(ctx)
 	local roundStartedAt = 0
 	local bestTimes = {} -- [userId] = seconds (session best)
 	local startDebounce = {} -- [player] = next allowed RequestStart time
+	local roundStats = {} -- [player] = { detentions = n, grabs = n }
+
+	-- ===================== report card =====================
+
+	local GRADE_LADDER = { "A+", "A", "B", "C", "D", "F" }
+
+	local function getStats(player)
+		local stats = roundStats[player]
+		if not stats then
+			stats = { detentions = 0, grabs = 0 }
+			roundStats[player] = stats
+		end
+		return stats
+	end
+
+	-- DetentionSystem / SilverAI report blemishes for the report card
+	function self.recordDetention(player)
+		if participants[player] then
+			getStats(player).detentions = getStats(player).detentions + 1
+		end
+	end
+
+	function self.recordGrab(player)
+		if participants[player] then
+			getStats(player).grabs = getStats(player).grabs + 1
+		end
+	end
+
+	local function computeGrade(player, elapsed)
+		local gradeCfg = config.GRADES
+		if not gradeCfg then
+			return nil
+		end
+		local baseIndex = #GRADE_LADDER -- slower than every row = F
+		for _, row in ipairs(gradeCfg.TIME_GRADES) do
+			if elapsed <= row[1] then
+				baseIndex = table.find(GRADE_LADDER, row[2]) or #GRADE_LADDER
+				break
+			end
+		end
+		local stats = getStats(player)
+		local penalty = stats.detentions * gradeCfg.DETENTION_PENALTY
+			+ math.floor(stats.grabs / 2) * gradeCfg.GRAB_PENALTY
+		return GRADE_LADDER[math.min(baseIndex + penalty, #GRADE_LADDER)]
+	end
 
 	-- ===================== queries used by the AIs =====================
 
@@ -1277,6 +1372,7 @@ function GameManager.init(ctx)
 		phase = "IDLE"
 		for player in pairs(participants) do
 			participants[player] = nil
+			roundStats[player] = nil
 			teleportToLobby(player)
 		end
 		ctx.detention.releaseAll()
@@ -1299,6 +1395,7 @@ function GameManager.init(ctx)
 
 	local function joinActiveRound(player)
 		participants[player] = true
+		roundStats[player] = { detentions = 0, grabs = 0 }
 		if not teleportToRoundSpawn(player, false) then
 			participants[player] = nil
 			return
@@ -1321,6 +1418,7 @@ function GameManager.init(ctx)
 		ctx.economy.onRoundStart()
 
 		participants[firstPlayer] = true
+		roundStats[firstPlayer] = { detentions = 0, grabs = 0 }
 		teleportToRoundSpawn(firstPlayer, true)
 		remotes.GameCountdown:FireClient(firstPlayer, config.COUNTDOWN_SECONDS)
 
@@ -1381,7 +1479,9 @@ function GameManager.init(ctx)
 
 		ctx.detention.releasePlayer(player)
 		teleportToLobby(player)
-		remotes.PlayerLost:FireClient(player, catcherName, catcherName .. " caught you in the halls.")
+		remotes.PlayerLost:FireClient(player, catcherName,
+			catcherName .. " caught you in the halls.", notebooksCollected, notebooksTotal)
+		roundStats[player] = nil
 		checkRoundEnd()
 	end
 
@@ -1397,10 +1497,12 @@ function GameManager.init(ctx)
 			best = elapsed
 			bestTimes[player.UserId] = best
 		end
+		local grade = computeGrade(player, elapsed)
 
 		ctx.detention.releasePlayer(player)
 		teleportToLobby(player)
-		remotes.PlayerWon:FireClient(player, elapsed, best)
+		remotes.PlayerWon:FireClient(player, elapsed, best, grade)
+		roundStats[player] = nil
 		checkRoundEnd()
 	end
 
@@ -1425,7 +1527,9 @@ function GameManager.init(ctx)
 		humanoid.Died:Connect(function()
 			if participants[player] then
 				participants[player] = nil
-				remotes.PlayerLost:FireClient(player, "the schoolhouse", "You collapsed. The school wins this time.")
+				roundStats[player] = nil
+				remotes.PlayerLost:FireClient(player, "the schoolhouse",
+					"You collapsed. The school wins this time.", notebooksCollected, notebooksTotal)
 				checkRoundEnd()
 			end
 		end)
@@ -1461,6 +1565,7 @@ function GameManager.init(ctx)
 
 	Players.PlayerRemoving:Connect(function(player)
 		participants[player] = nil
+		roundStats[player] = nil
 		ctx.detention.forget(player)
 		ctx.economy.forget(player)
 		startDebounce[player] = nil
@@ -1486,6 +1591,7 @@ function GameManager.init(ctx)
 			beginCountdown(player)
 		elseif phase == "COUNTDOWN" then
 			participants[player] = true
+			roundStats[player] = { detentions = 0, grabs = 0 }
 			teleportToRoundSpawn(player, true)
 			remotes.GameCountdown:FireClient(player, config.COUNTDOWN_SECONDS)
 		else -- ACTIVE: join the round in progress
@@ -2483,8 +2589,12 @@ return MapResolver
 	  4. Clone the notebook model at each chosen node — YOUR model from
 	     ReplicatedStorage/BaldiAssets/Items/Notebook if it exists, else a
 	     placeholder built in code.
-	  5. ProximityPrompt collect -> destroy model, bump the server counter,
-	     fire NotebookCollected to all clients.
+	  5. ProximityPrompt -> the Sweet Spot minigame (NOTEBOOK_MINIGAME):
+	     the server picks the hidden stage angles, the client plays the
+	     lock face, and completion is validated here — the session must
+	     exist, the player must still be at THAT notebook, and the elapsed
+	     time must be physically possible given the rotation speed. With
+	     ENABLED = false the prompt collects instantly like before.
 
 	Also runs a gentle spin/bob animation so notebooks read as pickups.
 ]]
@@ -2542,6 +2652,112 @@ function NotebookSpawner.init(ctx)
 	local self = {}
 	local active = {} -- [model] = { base = CFrame, phase = number }
 	local rng = Random.new()
+	local sessions = {} -- [player] = { notebook, angles, position, startedAt, minSeconds }
+	local minigameCfg = ctx.config.NOTEBOOK_MINIGAME
+
+	-- ===================== sweet-spot minigame =====================
+
+	local function clearSession(player, tellClient)
+		if not sessions[player] then
+			return
+		end
+		sessions[player] = nil
+		if tellClient and player.Parent then
+			ctx.remotes.NotebookMinigame:FireClient(player, nil)
+		end
+	end
+
+	local function collect(player, notebook)
+		if not active[notebook] then
+			return
+		end
+		active[notebook] = nil
+		notebook:Destroy()
+		ctx.manager.onNotebookCollected(player)
+	end
+
+	local function angularDistance(a, b)
+		local d = math.abs(a - b) % 360
+		return math.min(d, 360 - d)
+	end
+
+	local function startSession(player, notebook)
+		local position = notebook:GetPivot().Position
+		-- pick the hidden stage angles here so a modified client can't know
+		-- them ahead of the feedback, and so completion time can be checked
+		local angles = {}
+		local from = 0 -- the client's pointer starts at the top
+		local minSeconds = 0
+		for _ = 1, minigameCfg.STAGES do
+			local angle = (from + rng:NextInteger(60, 300)) % 360 -- always some travel
+			table.insert(angles, angle)
+			local travel = math.max(angularDistance(from, angle) - minigameCfg.HIT_WINDOW, 0)
+			minSeconds = minSeconds + travel / minigameCfg.ROTATE_SPEED + minigameCfg.HOLD_SECONDS
+			from = angle
+		end
+
+		local session = {
+			notebook = notebook,
+			angles = angles,
+			position = position,
+			startedAt = os.clock(),
+			minSeconds = minSeconds,
+		}
+		sessions[player] = session
+		ctx.remotes.NotebookMinigame:FireClient(player, { angles = angles, position = position })
+
+		-- watcher: abandon the session if the notebook vanishes, the player
+		-- wanders off / gets grabbed (anchored) / leaves, or it times out
+		task.spawn(function()
+			while sessions[player] == session do
+				local character = player.Parent and player.Character
+				local hrp = character and character:FindFirstChild("HumanoidRootPart")
+				if os.clock() - session.startedAt > minigameCfg.MAX_SECONDS
+					or not active[notebook]
+					or not ctx.manager.isRoundActive()
+					or not ctx.manager.isParticipant(player)
+					or not hrp
+					or hrp.Anchored
+					or (hrp.Position - position).Magnitude > minigameCfg.CANCEL_DISTANCE then
+					clearSession(player, true)
+					return
+				end
+				task.wait(0.25)
+			end
+		end)
+	end
+
+	ctx.remotes.NotebookMinigameAction.OnServerEvent:Connect(function(player, action)
+		local session = sessions[player]
+		if not session then
+			return
+		end
+		if action == "cancel" then
+			clearSession(player, false)
+			return
+		end
+		if action ~= "done" then
+			return
+		end
+		if not ctx.manager.isRoundActive() or not ctx.manager.isParticipant(player) then
+			clearSession(player, true)
+			return
+		end
+		-- finishing faster than the pointer can physically travel = cheating
+		if os.clock() - session.startedAt < session.minSeconds * 0.75 then
+			clearSession(player, true)
+			return
+		end
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if not hrp or (hrp.Position - session.position).Magnitude > minigameCfg.CANCEL_DISTANCE then
+			clearSession(player, true)
+			return
+		end
+		local notebook = session.notebook
+		clearSession(player, false)
+		collect(player, notebook)
+	end)
 
 	-- spin & bob
 	local elapsed = 0
@@ -2557,6 +2773,9 @@ function NotebookSpawner.init(ctx)
 	end)
 
 	function self.clear()
+		for player in pairs(sessions) do
+			clearSession(player, true)
+		end
 		for model in pairs(active) do
 			active[model] = nil
 			if model.Parent then
@@ -2627,9 +2846,13 @@ function NotebookSpawner.init(ctx)
 				if not ctx.manager.isRoundActive() or not ctx.manager.isParticipant(player) then
 					return
 				end
-				active[notebook] = nil
-				notebook:Destroy()
-				ctx.manager.onNotebookCollected(player)
+				if minigameCfg and minigameCfg.ENABLED then
+					if not sessions[player] then -- E re-presses mid-game just rotate
+						startSession(player, notebook)
+					end
+				else
+					collect(player, notebook)
+				end
 			end)
 
 			notebook.Parent = ctx.map.notebooksFolder
@@ -4213,6 +4436,9 @@ function SilverAI.init(ctx)
 			lastHitAt = 0,
 			releaseAt = os.clock() + cfg.GRAB_MAX_SECONDS,
 		}
+		if ctx.manager.recordGrab then
+			ctx.manager.recordGrab(player) -- report card blemish
+		end
 		hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 		hrp.Anchored = true
 
@@ -4635,6 +4861,155 @@ function SweeperAI.init(ctx)
 end
 
 return SweeperAI
+]=====],
+	},
+	{
+		root = "StarterPlayerScripts",
+		folders = { "BaldiClient" },
+		name = "ChaseTension",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	ChaseTension (ModuleScript, StarterPlayerScripts.BaldiClient.ChaseTension)
+
+	Proximity dread. While a round is on, this watches how close ChatRevive
+	is and plays a low heartbeat thump that quickens and swells as he closes
+	in (config: GameConfig.TENSION). After the exit opens the heart beats a
+	little faster still.
+
+	Your sound: set AssetConfig.SOUNDS.tension to a looping track and it is
+	used instead of the thumps, its volume rising as ChatRevive approaches.
+]]
+
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+
+local ChaseTension = {}
+
+function ChaseTension.init(ctx)
+	local cfg = ctx.config.TENSION
+	local self = {}
+	local inRound = false
+	local exitOpen = false
+	local hunterRoot = nil
+
+	local customLoopId = ctx.assets.SOUNDS and ctx.assets.SOUNDS.tension or ""
+	local loopSound = nil
+	if customLoopId ~= "" then
+		loopSound = Instance.new("Sound")
+		loopSound.Name = "BaldiTension"
+		loopSound.SoundId = customLoopId
+		loopSound.Looped = true
+		loopSound.Volume = 0
+		loopSound.Parent = SoundService
+	end
+
+	local function findHunterRoot()
+		if hunterRoot and hunterRoot.Parent then
+			return hunterRoot
+		end
+		hunterRoot = nil
+		local map = workspace:FindFirstChild("BaldiMap")
+		local npcs = map and map:FindFirstChild("Npcs")
+		local model = npcs and npcs:FindFirstChild("ChatRevive")
+		hunterRoot = model and model:FindFirstChild("HumanoidRootPart") or nil
+		return hunterRoot
+	end
+
+	-- 0 = out of range, 1 = right on top of you
+	local function getCloseness()
+		local character = ctx.player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		local hunter = findHunterRoot()
+		if not hrp or not hunter then
+			return 0
+		end
+		local distance = (hunter.Position - hrp.Position).Magnitude
+		return math.clamp(1 - distance / cfg.RANGE, 0, 1)
+	end
+
+	local function thump(volume)
+		pcall(function()
+			local sound = Instance.new("Sound")
+			sound.SoundId = "rbxasset://sounds/snap.mp3"
+			sound.PlaybackSpeed = 0.42
+			sound.Volume = volume
+			sound.Parent = SoundService
+			sound:Play()
+			Debris:AddItem(sound, 3)
+		end)
+	end
+
+	if loopSound then
+		-- custom track: keep it running, breathe the volume with distance
+		task.spawn(function()
+			while true do
+				task.wait(0.15)
+				local closeness = inRound and getCloseness() or 0
+				local target = cfg.MAX_VOLUME * closeness
+				if target > 0 and not loopSound.IsPlaying then
+					pcall(function()
+						loopSound:Play()
+					end)
+				elseif target <= 0 and loopSound.IsPlaying then
+					pcall(function()
+						loopSound:Stop()
+					end)
+				end
+				loopSound.Volume = loopSound.Volume + (target - loopSound.Volume) * 0.3
+			end
+		end)
+	else
+		-- built-in heartbeat: interval and volume scale with closeness
+		task.spawn(function()
+			while true do
+				if not inRound then
+					task.wait(0.5)
+				else
+					local closeness = getCloseness()
+					if closeness <= 0 then
+						task.wait(0.4)
+					else
+						local interval = cfg.MAX_INTERVAL
+							+ (cfg.MIN_INTERVAL - cfg.MAX_INTERVAL) * closeness
+						if exitOpen then
+							interval = interval * 0.85 -- enraged: the heart races
+						end
+						thump(cfg.MAX_VOLUME * (0.25 + 0.75 * closeness))
+						task.wait(interval)
+					end
+				end
+			end
+		end)
+	end
+
+	ctx.remotes.GameStarted.OnClientEvent:Connect(function()
+		inRound = true
+		exitOpen = false
+		hunterRoot = nil -- rigs respawn per round; re-find
+	end)
+	ctx.remotes.PhaseChanged.OnClientEvent:Connect(function(phaseName)
+		if phaseName == "EXIT_OPEN" then
+			exitOpen = true
+		end
+	end)
+	local function stop()
+		inRound = false
+		if loopSound then
+			loopSound.Volume = 0
+			pcall(function()
+				loopSound:Stop()
+			end)
+		end
+	end
+	ctx.remotes.RoundEnded.OnClientEvent:Connect(stop)
+	ctx.remotes.PlayerLost.OnClientEvent:Connect(stop)
+	ctx.remotes.PlayerWon.OnClientEvent:Connect(stop)
+
+	return self
+end
+
+return ChaseTension
 ]=====],
 	},
 	{
@@ -5313,8 +5688,11 @@ return HudController
 	InputHandler (ModuleScript, StarterPlayerScripts.BaldiClient.InputHandler)
 	Routes raw input to gameplay callbacks so the other controllers never
 	talk to UserInputService directly:
-	  Shift (hold)  -> sprint        E -> use slot 1        Q -> swap slots
-	Mobile equivalents are on-screen buttons created by HudController; they
+	  Shift (hold)  -> sprint     E -> use slot 1     Q -> swap slots
+	  F -> cancel (give up the notebook minigame)
+	E and Q also report held-state (onUseHeld / onSwapHeld) for the
+	sweet-spot minigame's continuous rotation. Mobile equivalents are
+	on-screen buttons created by HudController / the minigame UIs; they
 	call the same notify* functions.
 ]]
 
@@ -5329,6 +5707,9 @@ function InputHandler.init(ctx)
 	local sprintCallbacks = {}
 	local useCallbacks = {}
 	local swapCallbacks = {}
+	local useHeldCallbacks = {}
+	local swapHeldCallbacks = {}
+	local cancelCallbacks = {}
 
 	local function fire(callbacks, ...)
 		for _, callback in ipairs(callbacks) do
@@ -5348,6 +5729,20 @@ function InputHandler.init(ctx)
 		table.insert(swapCallbacks, callback)
 	end
 
+	-- held-state versions of E / Q, fired (true) on press and (false) on
+	-- release — the sweet-spot minigame rotates while these are held
+	function self.onUseHeld(callback)
+		table.insert(useHeldCallbacks, callback)
+	end
+
+	function self.onSwapHeld(callback)
+		table.insert(swapHeldCallbacks, callback)
+	end
+
+	function self.onCancel(callback)
+		table.insert(cancelCallbacks, callback)
+	end
+
 	-- mobile buttons (and anything else) report through these
 	function self.notifySprint(held)
 		fire(sprintCallbacks, held)
@@ -5361,6 +5756,18 @@ function InputHandler.init(ctx)
 		fire(swapCallbacks)
 	end
 
+	function self.notifyUseHeld(held)
+		fire(useHeldCallbacks, held)
+	end
+
+	function self.notifySwapHeld(held)
+		fire(swapHeldCallbacks, held)
+	end
+
+	function self.notifyCancel()
+		fire(cancelCallbacks)
+	end
+
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if processed then
 			return
@@ -5369,14 +5776,22 @@ function InputHandler.init(ctx)
 			self.notifySprint(true)
 		elseif input.KeyCode == Enum.KeyCode.E then
 			self.notifyUse()
+			self.notifyUseHeld(true)
 		elseif input.KeyCode == Enum.KeyCode.Q then
 			self.notifySwap()
+			self.notifySwapHeld(true)
+		elseif input.KeyCode == Enum.KeyCode.F then
+			self.notifyCancel()
 		end
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
 		if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
 			self.notifySprint(false)
+		elseif input.KeyCode == Enum.KeyCode.E then
+			self.notifyUseHeld(false)
+		elseif input.KeyCode == Enum.KeyCode.Q then
+			self.notifySwapHeld(false)
 		end
 	end)
 
@@ -5438,6 +5853,10 @@ function ItemUseClient.init(ctx)
 		if minigame and minigame.active then
 			return -- this E press is a timing hit in Silver's grab minigame
 		end
+		local lockFace = ctx.controllers.NotebookMinigame
+		if lockFace and lockFace.active then
+			return -- this E press is rotating the sweet-spot dial
+		end
 		if not self.slots[1] then
 			return
 		end
@@ -5452,6 +5871,10 @@ function ItemUseClient.init(ctx)
 	end)
 
 	ctx.controllers.InputHandler.onSwap(function()
+		local lockFace = ctx.controllers.NotebookMinigame
+		if lockFace and lockFace.active then
+			return -- this Q press is rotating the sweet-spot dial
+		end
 		if not self.slots[1] and not self.slots[2] then
 			return
 		end
@@ -5512,6 +5935,8 @@ local INIT_ORDER = {
 	"DetentionOverlay",
 	"FrostyVignette",
 	"SilverMinigame",
+	"NotebookMinigame",
+	"ChaseTension",
 	"MenuController",
 }
 
@@ -5759,9 +6184,9 @@ function MenuController.init(ctx)
 			"Collect all the notebooks, then escape through the EXIT.",
 			"WASD — move   |   Shift — sprint (drains stamina)",
 			"E — use item   |   Q — swap item slots",
-			"ChatRevive chases on sight. Don't let it touch you.",
-			"LP detains anyone he SEES moving too fast. Walk near him.",
-			"Frosty is harmless... but his chill slows you down.",
+			"Notebooks lock: rotate the dial (E / Q), hold the sweet",
+			"spot until it clicks. F gives up. You're not safe meanwhile!",
+			"ChatRevive chases on sight. LP detains runners he sees.",
 		}, "\n"),
 		TextScaled = false,
 		TextSize = 15,
@@ -5814,16 +6239,26 @@ function MenuController.init(ctx)
 			TextStrokeTransparency = 0,
 			Parent = screen,
 		})
+		-- the report card: a big grade letter between the title and details
+		local gradeLabel = UiKit.label({
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.fromScale(0.5, 0.33),
+			Size = UDim2.new(0.9, 0, 0.11, 0),
+			Text = "",
+			TextColor3 = accent,
+			TextStrokeTransparency = 0,
+			Parent = screen,
+		})
 		local detailLabel = UiKit.label({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.fromScale(0.5, 0.4),
+			Position = UDim2.fromScale(0.5, 0.46),
 			Size = UDim2.new(0.8, 0, 0, 30),
 			Text = "",
 			Parent = screen,
 		})
 		local subLabel = UiKit.label({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.fromScale(0.5, 0.47),
+			Position = UDim2.fromScale(0.5, 0.53),
 			Size = UDim2.new(0.8, 0, 0, 22),
 			Text = "",
 			TextColor3 = theme.textDim,
@@ -5831,7 +6266,7 @@ function MenuController.init(ctx)
 		})
 		local retryButton = UiKit.button({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.new(0.5, -90, 0.6, 0),
+			Position = UDim2.new(0.5, -90, 0.63, 0),
 			Size = UDim2.fromOffset(160, 52),
 			Text = "RETRY",
 			BackgroundColor3 = accent,
@@ -5840,14 +6275,39 @@ function MenuController.init(ctx)
 		})
 		local menuButton = UiKit.button({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.new(0.5, 90, 0.6, 0),
+			Position = UDim2.new(0.5, 90, 0.63, 0),
 			Size = UDim2.fromOffset(160, 52),
 			Text = "MENU",
 			BackgroundColor3 = theme.panelLight,
 			TextColor3 = theme.textPrimary,
 			Parent = screen,
 		})
-		return { screen = screen, detail = detailLabel, sub = subLabel, retry = retryButton, menu = menuButton }
+		return {
+			screen = screen,
+			grade = gradeLabel,
+			detail = detailLabel,
+			sub = subLabel,
+			retry = retryButton,
+			menu = menuButton,
+		}
+	end
+
+	local GRADE_COLORS = {
+		["A+"] = theme.green,
+		["A"] = theme.green,
+		["B"] = theme.yellow,
+		["C"] = theme.yellow,
+		["D"] = Color3.fromRGB(235, 140, 50),
+		["F"] = theme.red,
+	}
+
+	local function setGrade(endScreen, grade)
+		if grade then
+			endScreen.grade.Text = "Grade: " .. grade
+			endScreen.grade.TextColor3 = GRADE_COLORS[grade] or theme.textPrimary
+		else
+			endScreen.grade.Text = ""
+		end
 	end
 
 	local winScreen = makeEndScreen("win", theme.green, "ESCAPED!", "WIN_BACKGROUND")
@@ -5909,20 +6369,26 @@ function MenuController.init(ctx)
 		enterRound()
 	end)
 
-	ctx.remotes.PlayerWon.OnClientEvent:Connect(function(elapsed, best)
+	ctx.remotes.PlayerWon.OnClientEvent:Connect(function(elapsed, best, grade)
 		exitRound()
 		sounds.winJingle()
+		setGrade(winScreen, grade)
 		winScreen.detail.Text = "Time: " .. formatTime(elapsed)
 		winScreen.sub.Text = "Session best: " .. formatTime(best)
 		bestTimeLabel.Text = "Best time: " .. formatTime(best)
 		showScreen("win")
 	end)
 
-	ctx.remotes.PlayerLost.OnClientEvent:Connect(function(catcherName, cause)
+	ctx.remotes.PlayerLost.OnClientEvent:Connect(function(catcherName, cause, collected, total)
 		exitRound()
 		sounds.play("caught")
+		setGrade(loseScreen, "F") -- losing is always an F
 		loseScreen.detail.Text = "Caught by " .. tostring(catcherName)
-		loseScreen.sub.Text = tostring(cause or "")
+		local subText = tostring(cause or "")
+		if collected and total then
+			subText = subText .. string.format("  (Notebooks: %d/%d)", collected, total)
+		end
+		loseScreen.sub.Text = subText
 		showScreen("lose")
 	end)
 
@@ -5943,6 +6409,334 @@ function MenuController.init(ctx)
 end
 
 return MenuController
+]=====],
+	},
+	{
+		root = "StarterPlayerScripts",
+		folders = { "BaldiClient" },
+		name = "NotebookMinigame",
+		class = "ModuleScript",
+		source = [=====[
+--[[
+	NotebookMinigame (ModuleScript, StarterPlayerScripts.BaldiClient.NotebookMinigame)
+
+	The Sweet Spot lock face. Pressing E on a notebook opens a circular
+	dial with a pointer and a HIDDEN sweet spot (the server picked the
+	angles). Hold E to rotate clockwise, Q counter-clockwise; as the
+	pointer nears the spot the face shakes harder and the ring warms from
+	grey to orange to green. Hold the pointer on the spot to click the
+	stage; clear every stage and the server collects the notebook.
+
+	F (or the X button) gives up. Walking away, getting grabbed, detention
+	or the round ending all abort it too. You are NOT protected while
+	picking — keep one eye on the hall.
+
+	While the face is open, ProximityPrompts are disabled (so E rotates
+	instead of re-triggering the prompt) and ItemUseClient ignores E / Q.
+]]
+
+local RunService = game:GetService("RunService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
+local NotebookMinigame = {}
+
+function NotebookMinigame.init(ctx)
+	local UiKit = require(script.Parent:WaitForChild("UiKit"))
+	local theme = UiKit.theme
+	local sounds = ctx.controllers.SoundController
+	local cfg = ctx.config.NOTEBOOK_MINIGAME
+	local self = { active = false }
+
+	local COLD = Color3.fromRGB(120, 120, 120)
+	local WARM = Color3.fromRGB(235, 150, 40)
+	local FACE_POSITION = UDim2.fromScale(0.5, 0.52)
+
+	-- ===================== UI =====================
+
+	local playerGui = ctx.player:WaitForChild("PlayerGui")
+	local gui = UiKit.new("ScreenGui", {
+		Name = "BaldiNotebookMinigame",
+		ResetOnSpawn = false,
+		DisplayOrder = 7,
+		Enabled = false,
+		Parent = playerGui,
+	})
+
+	local face = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = FACE_POSITION,
+		Size = UDim2.fromOffset(230, 230),
+		BackgroundColor3 = theme.panel,
+		BackgroundTransparency = 0.15,
+		Parent = gui,
+	})
+	UiKit.corner(115).Parent = face
+	local ring = UiKit.stroke(COLD, 6)
+	ring.Parent = face
+
+	local titleLabel = UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 0, -46),
+		Size = UDim2.fromOffset(420, 30),
+		Text = "Find the sweet spot!",
+		TextColor3 = theme.accent,
+		Parent = face,
+	})
+	local hintLabel = UiKit.label({
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 0, -18),
+		Size = UDim2.fromOffset(460, 22),
+		Text = "[E] rotate right   [Q] rotate left   [F] give up",
+		TextColor3 = theme.textDim,
+		TextStrokeTransparency = 1,
+		Parent = face,
+	})
+
+	-- the rotating needle: a full-size container spun by Rotation, with the
+	-- visible needle drawn only on its top half
+	local needlePivot = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Parent = face,
+	})
+	UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 12),
+		Size = UDim2.new(0, 6, 0.5, -34),
+		BackgroundColor3 = theme.white,
+		Parent = needlePivot,
+		UiKit.corner(3),
+	})
+
+	-- center hub with the stage counter
+	local hub = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(74, 74),
+		BackgroundColor3 = theme.panelLight,
+		Parent = face,
+		UiKit.corner(37),
+	})
+	local stageLabel = UiKit.label({
+		Size = UDim2.fromScale(1, 1),
+		Text = "1 / 2",
+		Parent = hub,
+	})
+
+	-- hold-to-click progress, filling along the bottom of the face
+	local holdBack = UiKit.new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 1, 14),
+		Size = UDim2.fromOffset(190, 12),
+		BackgroundColor3 = theme.panel,
+		Parent = face,
+		UiKit.corner(6),
+	})
+	local holdFill = UiKit.new("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = theme.green,
+		Parent = holdBack,
+		UiKit.corner(6),
+	})
+
+	local closeButton = UiKit.button({
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(1, -16, 0, 16),
+		Size = UDim2.fromOffset(36, 36),
+		Text = "X",
+		BackgroundColor3 = theme.red,
+		TextColor3 = Color3.new(1, 1, 1),
+		Parent = face,
+	})
+
+	-- ===================== state =====================
+
+	local angles = nil -- the server-picked sweet spots, in stage order
+	local notebookPosition = nil
+	local stageIndex = 1
+	local pointer = 0
+	local holdTime = 0
+	local keyE, keyQ, touchE, touchQ = false, false, false, false
+	local rng = Random.new()
+
+	local function angularDistance(a, b)
+		local d = math.abs(a - b) % 360
+		return math.min(d, 360 - d)
+	end
+
+	local function setStageLabel()
+		stageLabel.Text = stageIndex .. " / " .. (angles and #angles or 0)
+	end
+
+	local function close(tellServer)
+		if not self.active then
+			return
+		end
+		self.active = false
+		angles = nil
+		gui.Enabled = false
+		ProximityPromptService.Enabled = true
+		if tellServer then
+			ctx.remotes.NotebookMinigameAction:FireServer("cancel")
+		end
+	end
+
+	local function open(data)
+		if typeof(data) ~= "table" or typeof(data.angles) ~= "table" or #data.angles == 0
+			or typeof(data.position) ~= "Vector3" then
+			return
+		end
+		angles = data.angles
+		notebookPosition = data.position
+		stageIndex = 1
+		pointer = 0
+		holdTime = 0
+		keyE, keyQ, touchE, touchQ = false, false, false, false
+		needlePivot.Rotation = 0
+		holdFill.Size = UDim2.fromScale(0, 1)
+		ring.Color = COLD
+		setStageLabel()
+		self.active = true
+		gui.Enabled = true
+		-- E must rotate, not re-trigger the notebook's prompt behind the face
+		ProximityPromptService.Enabled = false
+		sounds.play("click")
+	end
+
+	-- ===================== the dial =====================
+
+	RunService.RenderStepped:Connect(function(dt)
+		if not self.active or not angles then
+			return
+		end
+
+		-- abandon if we've wandered off the notebook
+		local character = ctx.player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if not hrp or (hrp.Position - notebookPosition).Magnitude > cfg.CANCEL_DISTANCE then
+			close(true)
+			return
+		end
+
+		local direction = ((keyE or touchE) and 1 or 0) - ((keyQ or touchQ) and 1 or 0)
+		pointer = (pointer + direction * cfg.ROTATE_SPEED * dt) % 360
+		needlePivot.Rotation = pointer
+
+		local distance = angularDistance(pointer, angles[stageIndex])
+		local hot = distance <= cfg.HIT_WINDOW
+		local heat = hot and 1
+			or math.clamp(1 - (distance - cfg.HIT_WINDOW) / math.max(cfg.WARM_RANGE - cfg.HIT_WINDOW, 1), 0, 1)
+
+		-- the only tells: the ring warms up and the face trembles
+		ring.Color = hot and theme.green or COLD:Lerp(WARM, heat)
+		ring.Thickness = hot and 8 or 6
+		local amplitude = hot and 5 or heat * 3
+		face.Position = FACE_POSITION
+			+ UDim2.fromOffset(rng:NextInteger(-amplitude, amplitude), rng:NextInteger(-amplitude, amplitude))
+
+		if hot then
+			holdTime = holdTime + dt
+		else
+			holdTime = 0
+		end
+		holdFill.Size = UDim2.fromScale(math.clamp(holdTime / cfg.HOLD_SECONDS, 0, 1), 1)
+
+		if holdTime >= cfg.HOLD_SECONDS then
+			holdTime = 0
+			if stageIndex >= #angles then
+				-- every spot clicked: the server validates and collects
+				-- (the HUD's NotebookCollected handler plays the fanfare)
+				ctx.remotes.NotebookMinigameAction:FireServer("done")
+				close(false)
+			else
+				stageIndex = stageIndex + 1
+				setStageLabel()
+				sounds.play("click", 1.7)
+				UiKit.shake(face, 6)
+			end
+		end
+	end)
+
+	-- ===================== input =====================
+
+	ctx.controllers.InputHandler.onUseHeld(function(held)
+		keyE = held
+	end)
+	ctx.controllers.InputHandler.onSwapHeld(function(held)
+		keyQ = held
+	end)
+	ctx.controllers.InputHandler.onCancel(function()
+		if self.active then
+			close(true)
+		end
+	end)
+	closeButton.Activated:Connect(function()
+		close(true)
+	end)
+
+	-- mobile: hold-to-rotate buttons flanking the face
+	if ctx.controllers.InputHandler.touchEnabled then
+		local function holdButton(text, xScale, setHeld)
+			local button = UiKit.button({
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(xScale, 0.78),
+				Size = UDim2.fromOffset(86, 86),
+				Text = text,
+				Parent = gui,
+			})
+			button.MouseButton1Down:Connect(function()
+				setHeld(true)
+			end)
+			button.MouseButton1Up:Connect(function()
+				setHeld(false)
+			end)
+			button.MouseLeave:Connect(function()
+				setHeld(false)
+			end)
+			return button
+		end
+		holdButton("<", 0.28, function(held)
+			touchQ = held
+		end)
+		holdButton(">", 0.72, function(held)
+			touchE = held
+		end)
+		hintLabel.Text = "hold < > to rotate   X gives up"
+	end
+
+	-- ===================== remotes =====================
+
+	ctx.remotes.NotebookMinigame.OnClientEvent:Connect(function(data)
+		if data == nil then
+			close(false)
+		else
+			open(data)
+		end
+	end)
+
+	-- anything that takes control of the player ends the attempt
+	ctx.remotes.SilverGrab.OnClientEvent:Connect(function()
+		close(true)
+	end)
+	ctx.remotes.SendToDetention.OnClientEvent:Connect(function()
+		close(true)
+	end)
+	ctx.remotes.RoundEnded.OnClientEvent:Connect(function()
+		close(false)
+	end)
+	ctx.remotes.PlayerLost.OnClientEvent:Connect(function()
+		close(false)
+	end)
+	ctx.remotes.PlayerWon.OnClientEvent:Connect(function()
+		close(false)
+	end)
+
+	return self
+end
+
+return NotebookMinigame
 ]=====],
 	},
 	{

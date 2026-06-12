@@ -33,6 +33,51 @@ function GameManager.init(ctx)
 	local roundStartedAt = 0
 	local bestTimes = {} -- [userId] = seconds (session best)
 	local startDebounce = {} -- [player] = next allowed RequestStart time
+	local roundStats = {} -- [player] = { detentions = n, grabs = n }
+
+	-- ===================== report card =====================
+
+	local GRADE_LADDER = { "A+", "A", "B", "C", "D", "F" }
+
+	local function getStats(player)
+		local stats = roundStats[player]
+		if not stats then
+			stats = { detentions = 0, grabs = 0 }
+			roundStats[player] = stats
+		end
+		return stats
+	end
+
+	-- DetentionSystem / SilverAI report blemishes for the report card
+	function self.recordDetention(player)
+		if participants[player] then
+			getStats(player).detentions = getStats(player).detentions + 1
+		end
+	end
+
+	function self.recordGrab(player)
+		if participants[player] then
+			getStats(player).grabs = getStats(player).grabs + 1
+		end
+	end
+
+	local function computeGrade(player, elapsed)
+		local gradeCfg = config.GRADES
+		if not gradeCfg then
+			return nil
+		end
+		local baseIndex = #GRADE_LADDER -- slower than every row = F
+		for _, row in ipairs(gradeCfg.TIME_GRADES) do
+			if elapsed <= row[1] then
+				baseIndex = table.find(GRADE_LADDER, row[2]) or #GRADE_LADDER
+				break
+			end
+		end
+		local stats = getStats(player)
+		local penalty = stats.detentions * gradeCfg.DETENTION_PENALTY
+			+ math.floor(stats.grabs / 2) * gradeCfg.GRAB_PENALTY
+		return GRADE_LADDER[math.min(baseIndex + penalty, #GRADE_LADDER)]
+	end
 
 	-- ===================== queries used by the AIs =====================
 
@@ -137,6 +182,7 @@ function GameManager.init(ctx)
 		phase = "IDLE"
 		for player in pairs(participants) do
 			participants[player] = nil
+			roundStats[player] = nil
 			teleportToLobby(player)
 		end
 		ctx.detention.releaseAll()
@@ -159,6 +205,7 @@ function GameManager.init(ctx)
 
 	local function joinActiveRound(player)
 		participants[player] = true
+		roundStats[player] = { detentions = 0, grabs = 0 }
 		if not teleportToRoundSpawn(player, false) then
 			participants[player] = nil
 			return
@@ -181,6 +228,7 @@ function GameManager.init(ctx)
 		ctx.economy.onRoundStart()
 
 		participants[firstPlayer] = true
+		roundStats[firstPlayer] = { detentions = 0, grabs = 0 }
 		teleportToRoundSpawn(firstPlayer, true)
 		remotes.GameCountdown:FireClient(firstPlayer, config.COUNTDOWN_SECONDS)
 
@@ -241,7 +289,9 @@ function GameManager.init(ctx)
 
 		ctx.detention.releasePlayer(player)
 		teleportToLobby(player)
-		remotes.PlayerLost:FireClient(player, catcherName, catcherName .. " caught you in the halls.")
+		remotes.PlayerLost:FireClient(player, catcherName,
+			catcherName .. " caught you in the halls.", notebooksCollected, notebooksTotal)
+		roundStats[player] = nil
 		checkRoundEnd()
 	end
 
@@ -257,10 +307,12 @@ function GameManager.init(ctx)
 			best = elapsed
 			bestTimes[player.UserId] = best
 		end
+		local grade = computeGrade(player, elapsed)
 
 		ctx.detention.releasePlayer(player)
 		teleportToLobby(player)
-		remotes.PlayerWon:FireClient(player, elapsed, best)
+		remotes.PlayerWon:FireClient(player, elapsed, best, grade)
+		roundStats[player] = nil
 		checkRoundEnd()
 	end
 
@@ -285,7 +337,9 @@ function GameManager.init(ctx)
 		humanoid.Died:Connect(function()
 			if participants[player] then
 				participants[player] = nil
-				remotes.PlayerLost:FireClient(player, "the schoolhouse", "You collapsed. The school wins this time.")
+				roundStats[player] = nil
+				remotes.PlayerLost:FireClient(player, "the schoolhouse",
+					"You collapsed. The school wins this time.", notebooksCollected, notebooksTotal)
 				checkRoundEnd()
 			end
 		end)
@@ -321,6 +375,7 @@ function GameManager.init(ctx)
 
 	Players.PlayerRemoving:Connect(function(player)
 		participants[player] = nil
+		roundStats[player] = nil
 		ctx.detention.forget(player)
 		ctx.economy.forget(player)
 		startDebounce[player] = nil
@@ -346,6 +401,7 @@ function GameManager.init(ctx)
 			beginCountdown(player)
 		elseif phase == "COUNTDOWN" then
 			participants[player] = true
+			roundStats[player] = { detentions = 0, grabs = 0 }
 			teleportToRoundSpawn(player, true)
 			remotes.GameCountdown:FireClient(player, config.COUNTDOWN_SECONDS)
 		else -- ACTIVE: join the round in progress

@@ -58,6 +58,8 @@ AssetConfig.IMAGES = {
 --   whistle = LP's alert when he starts chasing
 --   sweep   = looping noise a sweeper makes mid-sweep
 --   alarm   = the placed Alarm Clock's ringing loop
+--   tension = optional looping dread track that swells as ChatRevive
+--             closes in (blank = a built-in heartbeat thump instead)
 AssetConfig.SOUNDS = {
 	click = "",
 	collect = "",
@@ -76,6 +78,7 @@ AssetConfig.SOUNDS = {
 	whistle = "",
 	sweep = "",
 	alarm = "",
+	tension = "",
 }
 
 return AssetConfig

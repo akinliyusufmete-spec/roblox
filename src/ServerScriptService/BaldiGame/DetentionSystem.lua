@@ -46,6 +46,9 @@ function DetentionSystem.init(ctx)
 		hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 		hrp.Anchored = true
 		ctx.remotes.SendToDetention:FireClient(player, seconds, byName)
+		if ctx.manager and ctx.manager.recordDetention then
+			ctx.manager.recordDetention(player) -- report card blemish
+		end
 
 		task.delay(seconds, function()
 			release(player)

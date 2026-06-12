@@ -39,6 +39,8 @@ local INIT_ORDER = {
 	"DetentionOverlay",
 	"FrostyVignette",
 	"SilverMinigame",
+	"NotebookMinigame",
+	"ChaseTension",
 	"MenuController",
 }
 

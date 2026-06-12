@@ -51,6 +51,8 @@ then copy each file's contents from `src/` into the matching script:
 | `BaldiClient/DetentionOverlay` | ModuleScript | `.../DetentionOverlay.lua` |
 | `BaldiClient/FrostyVignette` | ModuleScript | `.../FrostyVignette.lua` |
 | `BaldiClient/SilverMinigame` | ModuleScript | `.../SilverMinigame.lua` |
+| `BaldiClient/NotebookMinigame` | ModuleScript | `.../NotebookMinigame.lua` |
+| `BaldiClient/ChaseTension` | ModuleScript | `.../ChaseTension.lua` |
 | `BaldiClient/MenuController` | ModuleScript | `.../MenuController.lua` |
 
 Watch the class types: `Main` under BaldiGame is a **Script**, `Main` under

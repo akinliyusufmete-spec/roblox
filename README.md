@@ -30,7 +30,7 @@ Script/LocalScript/ModuleScript.
 2. **View → Command Bar**.
 3. Copy the **entire** [`installer/InstallBaldiGame.lua`](installer/InstallBaldiGame.lua),
    paste into the command bar, press **Enter**.
-4. `[BaldiGame] Installed 29 scripts.` → press **Play** (F5).
+4. `[BaldiGame] Installed 34 scripts.` → press **Play** (F5).
 
 Re-running it replaces the previous install (your map/assets are untouched,
 but your `AssetConfig` ids get reset — save them first).
@@ -49,11 +49,22 @@ maps `src/` into the right services.
 |---|---|
 | WASD / left stick | Move |
 | **Shift** (hold) / mobile **RUN** toggle | Sprint (drains stamina) |
-| **E** / mobile **USE** | Use item in slot 1 — also collects notebooks / opens vending machines when prompted |
+| **E** / mobile **USE** | Use item in slot 1 — also starts notebook collection / buys at vending machines when prompted |
 | **Q** / mobile **SWAP** | Swap item slots |
+| **F** | Give up the notebook minigame (mobile: the X button) |
 
-**Goal:** PLAY → collect all **10 notebooks** (E near a notebook) → the EXIT
-door turns green → touch it to escape. Your time is tracked; beat your best.
+**Goal:** PLAY → collect all **10 notebooks** → the EXIT door turns green →
+touch it to escape. Your time is tracked, and escaping earns a **report-card
+grade** (A+ → F): faster is better, detentions and Silver grabs cost a step.
+
+**Collecting a notebook** opens the **Sweet Spot** lock face: rotate the
+pointer with **E** (clockwise) / **Q** (counter-clockwise) — the closer you
+get to the hidden spot, the harder the face shakes and the warmer the ring
+glows. Hold the pointer on the spot until it clicks; clear every stage
+(default 2) to collect. **You stay vulnerable the whole time**, so clear the
+hall first or be ready to bail (F). The minigame is server-validated —
+the stage angles are picked server-side and impossible completion times
+are rejected.
 
 **The cast:**
 
@@ -74,6 +85,10 @@ are currency for the four vending machines.
 
 **Stamina:** sprint drains 10/s, regen 6/s; at 0 you're exhausted and sprint
 locks until 30.
+
+**Dread:** a heartbeat thump quickens and swells as ChatRevive closes in
+(within 50 studs) — and races once he's enraged. Replace it with your own
+looping track via `AssetConfig.SOUNDS.tension`.
 
 Activation gating: 0 notebooks = everyone frozen → 1st notebook = everyone
 wakes ("You hear footsteps...") → 10th = ChatRevive enrages + exit opens.
@@ -125,11 +140,13 @@ StarterPlayer
         ├── HudController      (ModuleScript)  — Baldi-style HUD (counter top-left, slots top-right)
         ├── StaminaController  (ModuleScript)  — drain/regen/exhaustion/debuff
         ├── ItemUseClient      (ModuleScript)  — slot mirror, use/swap input
-        ├── VendingMachineUI   (ModuleScript)  — buy popup
+        ├── VendingMachineUI   (ModuleScript)  — buy toast (purchase is instant)
         ├── DetentionOverlay   (ModuleScript)  — countdown overlay
         ├── FrostyVignette     (ModuleScript)  — icy screen edges
         ├── SilverMinigame     (ModuleScript)  — grab escape: timing-bar minigame
-        └── MenuController     (ModuleScript)  — menu, countdown, win/lose screens
+        ├── NotebookMinigame   (ModuleScript)  — sweet-spot lock face (E/Q/F)
+        ├── ChaseTension       (ModuleScript)  — heartbeat that swells near ChatRevive
+        └── MenuController     (ModuleScript)  — menu, countdown, win/lose + grade
 
 Workspace
 └── BaldiMap                   (Folder)        — YOUR map (or the generated placeholder)
@@ -177,6 +194,9 @@ Workspace
 - [ ] Menu appears; PLAY → 3-2-1 countdown → first-person spawn.
 - [ ] HUD: notebooks top-left, item squares top-right, stamina bottom.
 - [ ] Sprint drains the bar; at 0 it flashes red, shakes, locks until 30.
+- [ ] E on a notebook opens the lock face; E/Q rotate; the ring warms and
+      the face shakes near the spot; holding it clicks the stage; both
+      stages = collected. F closes it; walking away closes it.
 - [ ] Notebook #1 wakes all three NPCs ("You hear footsteps...").
 - [ ] ChatRevive chases on sight; catch shows CAUGHT! + drops a Nickel.
 - [ ] Sprinting in LP's sight → detention with a 15s countdown, then release.
@@ -192,5 +212,8 @@ Workspace
       other characters) along; the shove ends when the sweep ends.
 - [ ] Alarm Clock: place it, run — ChatRevive beelines to the ringing and
       stares at it until it stops.
+- [ ] Heartbeat thump fades in as ChatRevive nears, quickens up close.
 - [ ] 10/10: "GET TO THE EXIT!", door green, ChatRevive enraged.
-- [ ] Green door → ESCAPED! with time + session best; Retry restarts.
+- [ ] Green door → ESCAPED! with time + session best + a grade letter;
+      eating a detention or two drops the grade. Losing shows an F.
+- [ ] Retry restarts.

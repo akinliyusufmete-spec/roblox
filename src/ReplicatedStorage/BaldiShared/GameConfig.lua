@@ -26,6 +26,23 @@ GameConfig.MENU_CAMERA = {
 GameConfig.NOTEBOOK_SPAWN_COUNT = 10 -- how many notebooks are placed per round
 GameConfig.NOTEBOOK_PROMPT_DISTANCE = 8
 
+-- Sweet Spot minigame: E on a notebook opens a lock face instead of
+-- collecting instantly. Rotate the pointer with E / Q; the closer it gets
+-- to the hidden sweet spot the harder the face shakes and glows. Hold the
+-- pointer on the spot to click a stage; clear every stage to collect.
+-- F (or the X button) abandons the notebook — you stay vulnerable the
+-- whole time, so pick your moment.
+GameConfig.NOTEBOOK_MINIGAME = {
+	ENABLED = true, -- false = E collects instantly, like before
+	STAGES = 2, -- sweet spots per notebook
+	ROTATE_SPEED = 150, -- pointer degrees/sec while E or Q is held
+	HIT_WINDOW = 14, -- degrees either side of the spot that count as "on it"
+	WARM_RANGE = 90, -- shake/color feedback starts ramping inside this arc
+	HOLD_SECONDS = 0.45, -- stay on the spot this long to click the stage
+	MAX_SECONDS = 25, -- server abandons a session after this long
+	CANCEL_DISTANCE = 12, -- walking this far from the notebook abandons it
+}
+
 -- ========== Player movement / stamina ==========
 GameConfig.PLAYER = {
 	WALK_SPEED = 16,
@@ -93,6 +110,31 @@ GameConfig.BSODA_PROJECTILE = {
 
 GameConfig.ALARM_CLOCK = {
 	RING_SECONDS = 12, -- how long a placed alarm distracts ChatRevive
+}
+
+-- ========== Feel & polish ==========
+-- Proximity dread: a heartbeat thump that quickens and swells as
+-- ChatRevive closes in (or your own looping track via SOUNDS.tension).
+GameConfig.TENSION = {
+	RANGE = 50, -- audible within this many studs of ChatRevive
+	MAX_INTERVAL = 1.15, -- seconds between thumps at the edge of RANGE
+	MIN_INTERVAL = 0.32, -- seconds between thumps right on top of you
+	MAX_VOLUME = 0.9,
+}
+
+-- End-of-round report card. Your escape time sets the base grade (first
+-- row the time fits); every detention and every two Silver grabs knock it
+-- down a step. Losing is always an F.
+GameConfig.GRADES = {
+	TIME_GRADES = {
+		{ 150, "A+" },
+		{ 210, "A" },
+		{ 280, "B" },
+		{ 360, "C" },
+		{ 480, "D" },
+	}, -- slower than the last row = F (you escaped... technically)
+	DETENTION_PENALTY = 1, -- grade steps lost per detention
+	GRAB_PENALTY = 1, -- grade steps lost per two Silver grabs
 }
 
 -- ========== NPCs ==========
@@ -203,6 +245,7 @@ GameConfig.REMOTE_NAMES = {
 	"BuyItem",
 	"SilverHit", -- one successful timing hit in Silver's grab minigame
 	"SilverEscape", -- "use my scissors" while grabbed
+	"NotebookMinigameAction", -- "done" / "cancel" from the sweet-spot minigame
 	-- server -> client
 	"GameCountdown",
 	"GameStarted",
@@ -223,6 +266,7 @@ GameConfig.REMOTE_NAMES = {
 	"SilverGrab", -- you've been grabbed: open the minigame
 	"SilverReleased", -- grab over: close it
 	"SweptPush", -- a sweeper is carrying you: apply the push client-side
+	"NotebookMinigame", -- open the sweet-spot lock face (nil = close it)
 }
 
 return GameConfig

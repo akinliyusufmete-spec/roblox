@@ -44,6 +44,10 @@ function ItemUseClient.init(ctx)
 		if minigame and minigame.active then
 			return -- this E press is a timing hit in Silver's grab minigame
 		end
+		local lockFace = ctx.controllers.NotebookMinigame
+		if lockFace and lockFace.active then
+			return -- this E press is rotating the sweet-spot dial
+		end
 		if not self.slots[1] then
 			return
 		end
@@ -58,6 +62,10 @@ function ItemUseClient.init(ctx)
 	end)
 
 	ctx.controllers.InputHandler.onSwap(function()
+		local lockFace = ctx.controllers.NotebookMinigame
+		if lockFace and lockFace.active then
+			return -- this Q press is rotating the sweet-spot dial
+		end
 		if not self.slots[1] and not self.slots[2] then
 			return
 		end

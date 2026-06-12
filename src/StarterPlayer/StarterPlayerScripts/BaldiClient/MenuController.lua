@@ -228,9 +228,9 @@ function MenuController.init(ctx)
 			"Collect all the notebooks, then escape through the EXIT.",
 			"WASD — move   |   Shift — sprint (drains stamina)",
 			"E — use item   |   Q — swap item slots",
-			"ChatRevive chases on sight. Don't let it touch you.",
-			"LP detains anyone he SEES moving too fast. Walk near him.",
-			"Frosty is harmless... but his chill slows you down.",
+			"Notebooks lock: rotate the dial (E / Q), hold the sweet",
+			"spot until it clicks. F gives up. You're not safe meanwhile!",
+			"ChatRevive chases on sight. LP detains runners he sees.",
 		}, "\n"),
 		TextScaled = false,
 		TextSize = 15,
@@ -283,16 +283,26 @@ function MenuController.init(ctx)
 			TextStrokeTransparency = 0,
 			Parent = screen,
 		})
+		-- the report card: a big grade letter between the title and details
+		local gradeLabel = UiKit.label({
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.fromScale(0.5, 0.33),
+			Size = UDim2.new(0.9, 0, 0.11, 0),
+			Text = "",
+			TextColor3 = accent,
+			TextStrokeTransparency = 0,
+			Parent = screen,
+		})
 		local detailLabel = UiKit.label({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.fromScale(0.5, 0.4),
+			Position = UDim2.fromScale(0.5, 0.46),
 			Size = UDim2.new(0.8, 0, 0, 30),
 			Text = "",
 			Parent = screen,
 		})
 		local subLabel = UiKit.label({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.fromScale(0.5, 0.47),
+			Position = UDim2.fromScale(0.5, 0.53),
 			Size = UDim2.new(0.8, 0, 0, 22),
 			Text = "",
 			TextColor3 = theme.textDim,
@@ -300,7 +310,7 @@ function MenuController.init(ctx)
 		})
 		local retryButton = UiKit.button({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.new(0.5, -90, 0.6, 0),
+			Position = UDim2.new(0.5, -90, 0.63, 0),
 			Size = UDim2.fromOffset(160, 52),
 			Text = "RETRY",
 			BackgroundColor3 = accent,
@@ -309,14 +319,39 @@ function MenuController.init(ctx)
 		})
 		local menuButton = UiKit.button({
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.new(0.5, 90, 0.6, 0),
+			Position = UDim2.new(0.5, 90, 0.63, 0),
 			Size = UDim2.fromOffset(160, 52),
 			Text = "MENU",
 			BackgroundColor3 = theme.panelLight,
 			TextColor3 = theme.textPrimary,
 			Parent = screen,
 		})
-		return { screen = screen, detail = detailLabel, sub = subLabel, retry = retryButton, menu = menuButton }
+		return {
+			screen = screen,
+			grade = gradeLabel,
+			detail = detailLabel,
+			sub = subLabel,
+			retry = retryButton,
+			menu = menuButton,
+		}
+	end
+
+	local GRADE_COLORS = {
+		["A+"] = theme.green,
+		["A"] = theme.green,
+		["B"] = theme.yellow,
+		["C"] = theme.yellow,
+		["D"] = Color3.fromRGB(235, 140, 50),
+		["F"] = theme.red,
+	}
+
+	local function setGrade(endScreen, grade)
+		if grade then
+			endScreen.grade.Text = "Grade: " .. grade
+			endScreen.grade.TextColor3 = GRADE_COLORS[grade] or theme.textPrimary
+		else
+			endScreen.grade.Text = ""
+		end
 	end
 
 	local winScreen = makeEndScreen("win", theme.green, "ESCAPED!", "WIN_BACKGROUND")
@@ -378,20 +413,26 @@ function MenuController.init(ctx)
 		enterRound()
 	end)
 
-	ctx.remotes.PlayerWon.OnClientEvent:Connect(function(elapsed, best)
+	ctx.remotes.PlayerWon.OnClientEvent:Connect(function(elapsed, best, grade)
 		exitRound()
 		sounds.winJingle()
+		setGrade(winScreen, grade)
 		winScreen.detail.Text = "Time: " .. formatTime(elapsed)
 		winScreen.sub.Text = "Session best: " .. formatTime(best)
 		bestTimeLabel.Text = "Best time: " .. formatTime(best)
 		showScreen("win")
 	end)
 
-	ctx.remotes.PlayerLost.OnClientEvent:Connect(function(catcherName, cause)
+	ctx.remotes.PlayerLost.OnClientEvent:Connect(function(catcherName, cause, collected, total)
 		exitRound()
 		sounds.play("caught")
+		setGrade(loseScreen, "F") -- losing is always an F
 		loseScreen.detail.Text = "Caught by " .. tostring(catcherName)
-		loseScreen.sub.Text = tostring(cause or "")
+		local subText = tostring(cause or "")
+		if collected and total then
+			subText = subText .. string.format("  (Notebooks: %d/%d)", collected, total)
+		end
+		loseScreen.sub.Text = subText
 		showScreen("lose")
 	end)
 

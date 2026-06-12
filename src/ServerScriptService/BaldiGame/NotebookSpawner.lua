@@ -9,8 +9,12 @@
 	  4. Clone the notebook model at each chosen node — YOUR model from
 	     ReplicatedStorage/BaldiAssets/Items/Notebook if it exists, else a
 	     placeholder built in code.
-	  5. ProximityPrompt collect -> destroy model, bump the server counter,
-	     fire NotebookCollected to all clients.
+	  5. ProximityPrompt -> the Sweet Spot minigame (NOTEBOOK_MINIGAME):
+	     the server picks the hidden stage angles, the client plays the
+	     lock face, and completion is validated here — the session must
+	     exist, the player must still be at THAT notebook, and the elapsed
+	     time must be physically possible given the rotation speed. With
+	     ENABLED = false the prompt collects instantly like before.
 
 	Also runs a gentle spin/bob animation so notebooks read as pickups.
 ]]
@@ -68,6 +72,112 @@ function NotebookSpawner.init(ctx)
 	local self = {}
 	local active = {} -- [model] = { base = CFrame, phase = number }
 	local rng = Random.new()
+	local sessions = {} -- [player] = { notebook, angles, position, startedAt, minSeconds }
+	local minigameCfg = ctx.config.NOTEBOOK_MINIGAME
+
+	-- ===================== sweet-spot minigame =====================
+
+	local function clearSession(player, tellClient)
+		if not sessions[player] then
+			return
+		end
+		sessions[player] = nil
+		if tellClient and player.Parent then
+			ctx.remotes.NotebookMinigame:FireClient(player, nil)
+		end
+	end
+
+	local function collect(player, notebook)
+		if not active[notebook] then
+			return
+		end
+		active[notebook] = nil
+		notebook:Destroy()
+		ctx.manager.onNotebookCollected(player)
+	end
+
+	local function angularDistance(a, b)
+		local d = math.abs(a - b) % 360
+		return math.min(d, 360 - d)
+	end
+
+	local function startSession(player, notebook)
+		local position = notebook:GetPivot().Position
+		-- pick the hidden stage angles here so a modified client can't know
+		-- them ahead of the feedback, and so completion time can be checked
+		local angles = {}
+		local from = 0 -- the client's pointer starts at the top
+		local minSeconds = 0
+		for _ = 1, minigameCfg.STAGES do
+			local angle = (from + rng:NextInteger(60, 300)) % 360 -- always some travel
+			table.insert(angles, angle)
+			local travel = math.max(angularDistance(from, angle) - minigameCfg.HIT_WINDOW, 0)
+			minSeconds = minSeconds + travel / minigameCfg.ROTATE_SPEED + minigameCfg.HOLD_SECONDS
+			from = angle
+		end
+
+		local session = {
+			notebook = notebook,
+			angles = angles,
+			position = position,
+			startedAt = os.clock(),
+			minSeconds = minSeconds,
+		}
+		sessions[player] = session
+		ctx.remotes.NotebookMinigame:FireClient(player, { angles = angles, position = position })
+
+		-- watcher: abandon the session if the notebook vanishes, the player
+		-- wanders off / gets grabbed (anchored) / leaves, or it times out
+		task.spawn(function()
+			while sessions[player] == session do
+				local character = player.Parent and player.Character
+				local hrp = character and character:FindFirstChild("HumanoidRootPart")
+				if os.clock() - session.startedAt > minigameCfg.MAX_SECONDS
+					or not active[notebook]
+					or not ctx.manager.isRoundActive()
+					or not ctx.manager.isParticipant(player)
+					or not hrp
+					or hrp.Anchored
+					or (hrp.Position - position).Magnitude > minigameCfg.CANCEL_DISTANCE then
+					clearSession(player, true)
+					return
+				end
+				task.wait(0.25)
+			end
+		end)
+	end
+
+	ctx.remotes.NotebookMinigameAction.OnServerEvent:Connect(function(player, action)
+		local session = sessions[player]
+		if not session then
+			return
+		end
+		if action == "cancel" then
+			clearSession(player, false)
+			return
+		end
+		if action ~= "done" then
+			return
+		end
+		if not ctx.manager.isRoundActive() or not ctx.manager.isParticipant(player) then
+			clearSession(player, true)
+			return
+		end
+		-- finishing faster than the pointer can physically travel = cheating
+		if os.clock() - session.startedAt < session.minSeconds * 0.75 then
+			clearSession(player, true)
+			return
+		end
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if not hrp or (hrp.Position - session.position).Magnitude > minigameCfg.CANCEL_DISTANCE then
+			clearSession(player, true)
+			return
+		end
+		local notebook = session.notebook
+		clearSession(player, false)
+		collect(player, notebook)
+	end)
 
 	-- spin & bob
 	local elapsed = 0
@@ -83,6 +193,9 @@ function NotebookSpawner.init(ctx)
 	end)
 
 	function self.clear()
+		for player in pairs(sessions) do
+			clearSession(player, true)
+		end
 		for model in pairs(active) do
 			active[model] = nil
 			if model.Parent then
@@ -153,9 +266,13 @@ function NotebookSpawner.init(ctx)
 				if not ctx.manager.isRoundActive() or not ctx.manager.isParticipant(player) then
 					return
 				end
-				active[notebook] = nil
-				notebook:Destroy()
-				ctx.manager.onNotebookCollected(player)
+				if minigameCfg and minigameCfg.ENABLED then
+					if not sessions[player] then -- E re-presses mid-game just rotate
+						startSession(player, notebook)
+					end
+				else
+					collect(player, notebook)
+				end
 			end)
 
 			notebook.Parent = ctx.map.notebooksFolder
