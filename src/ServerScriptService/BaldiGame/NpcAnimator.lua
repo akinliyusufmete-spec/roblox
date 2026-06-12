@@ -65,6 +65,24 @@ local function attachTrackAnimator(model, humanoid, folder, chaseThreshold)
 					track.Priority = Enum.AnimationPriority.Movement
 					tracks[name] = track
 					loaded = loaded + 1
+					-- LoadAnimation "succeeds" even when the asset can't be
+					-- fetched — the usual cause is the id not being owned by
+					-- the account/group that owns this place, or being for a
+					-- different rig type (R6 vs R15). The track then stays
+					-- length 0 and nothing visibly plays. Catch that and say
+					-- so, instead of reporting a silent false success.
+					local checkTrack, animName, animId = track, name, animation.AnimationId
+					task.spawn(function()
+						local deadline = os.clock() + 6
+						while checkTrack.Length == 0 and os.clock() < deadline do
+							task.wait(0.2)
+						end
+						if checkTrack.Length == 0 then
+							warn(string.format(
+								"[BaldiGame] %s/Animations/%s loaded but stays length 0 — the id %s probably isn't published to this game's owner, or it's for a different rig type (R6 vs R15). Re-export it under the place's owner.",
+								model.Name, animName, animId))
+						end
+					end)
 				else
 					warn(string.format(
 						"[BaldiGame] %s/Animations/%s failed to load — is the id published to this game's owner (user or group)?",

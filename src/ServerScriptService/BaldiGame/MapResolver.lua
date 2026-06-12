@@ -176,6 +176,21 @@ function MapResolver.resolve(ctx)
 			end
 		end
 	end
+	-- No dedicated NickelSpawns? Scatter the starter coins across the
+	-- waypoints so the economy still works out of the box — otherwise
+	-- NICKELS_AT_ROUND_START silently does nothing on a custom map.
+	if #nickelSpawns == 0 and config.NICKELS_AT_ROUND_START > 0 then
+		for _, node in ipairs(waypoints:GetChildren()) do
+			if node:IsA("BasePart") then
+				table.insert(nickelSpawns, node.Position)
+			end
+		end
+		if #nickelSpawns > 0 then
+			warn("[BaldiGame] No BaldiMap/NickelSpawns parts found — scattering starter Nickels on Waypoints instead. Add a NickelSpawns folder with parts to place them where you want.")
+		else
+			warn("[BaldiGame] No BaldiMap/NickelSpawns or Waypoints — no starter Nickels can spawn. Add a NickelSpawns folder with parts.")
+		end
+	end
 
 	local itemSpawns = {}
 	if itemSpawnsFolder then

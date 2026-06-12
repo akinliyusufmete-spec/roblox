@@ -241,13 +241,17 @@ function ItemEconomy.init(ctx)
 
 	function self.onRoundStart()
 		self.clearPickups()
-		local spawned = 0
+		-- shuffle a copy so each round's starter coins land in different spots
+		local spots = {}
 		for _, position in ipairs(ctx.map.nickelSpawns) do
-			if spawned >= config.NICKELS_AT_ROUND_START then
-				break
-			end
-			self.spawnNickel(position)
-			spawned = spawned + 1
+			table.insert(spots, position)
+		end
+		for i = #spots, 2, -1 do
+			local j = math.random(i)
+			spots[i], spots[j] = spots[j], spots[i]
+		end
+		for index = 1, math.min(config.NICKELS_AT_ROUND_START, #spots) do
+			self.spawnNickel(spots[index])
 		end
 		if config.WORLD_ITEMS_AT_ROUND_START then
 			for itemId, position in pairs(ctx.map.itemSpawns) do

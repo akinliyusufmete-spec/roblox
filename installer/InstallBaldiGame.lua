@@ -1749,13 +1749,17 @@ function ItemEconomy.init(ctx)
 
 	function self.onRoundStart()
 		self.clearPickups()
-		local spawned = 0
+		-- shuffle a copy so each round's starter coins land in different spots
+		local spots = {}
 		for _, position in ipairs(ctx.map.nickelSpawns) do
-			if spawned >= config.NICKELS_AT_ROUND_START then
-				break
-			end
-			self.spawnNickel(position)
-			spawned = spawned + 1
+			table.insert(spots, position)
+		end
+		for i = #spots, 2, -1 do
+			local j = math.random(i)
+			spots[i], spots[j] = spots[j], spots[i]
+		end
+		for index = 1, math.min(config.NICKELS_AT_ROUND_START, #spots) do
+			self.spawnNickel(spots[index])
 		end
 		if config.WORLD_ITEMS_AT_ROUND_START then
 			for itemId, position in pairs(ctx.map.itemSpawns) do
@@ -2375,6 +2379,21 @@ function MapResolver.resolve(ctx)
 			end
 		end
 	end
+	-- No dedicated NickelSpawns? Scatter the starter coins across the
+	-- waypoints so the economy still works out of the box — otherwise
+	-- NICKELS_AT_ROUND_START silently does nothing on a custom map.
+	if #nickelSpawns == 0 and config.NICKELS_AT_ROUND_START > 0 then
+		for _, node in ipairs(waypoints:GetChildren()) do
+			if node:IsA("BasePart") then
+				table.insert(nickelSpawns, node.Position)
+			end
+		end
+		if #nickelSpawns > 0 then
+			warn("[BaldiGame] No BaldiMap/NickelSpawns parts found — scattering starter Nickels on Waypoints instead. Add a NickelSpawns folder with parts to place them where you want.")
+		else
+			warn("[BaldiGame] No BaldiMap/NickelSpawns or Waypoints — no starter Nickels can spawn. Add a NickelSpawns folder with parts.")
+		end
+	end
 
 	local itemSpawns = {}
 	if itemSpawnsFolder then
@@ -2700,6 +2719,24 @@ local function attachTrackAnimator(model, humanoid, folder, chaseThreshold)
 					track.Priority = Enum.AnimationPriority.Movement
 					tracks[name] = track
 					loaded = loaded + 1
+					-- LoadAnimation "succeeds" even when the asset can't be
+					-- fetched — the usual cause is the id not being owned by
+					-- the account/group that owns this place, or being for a
+					-- different rig type (R6 vs R15). The track then stays
+					-- length 0 and nothing visibly plays. Catch that and say
+					-- so, instead of reporting a silent false success.
+					local checkTrack, animName, animId = track, name, animation.AnimationId
+					task.spawn(function()
+						local deadline = os.clock() + 6
+						while checkTrack.Length == 0 and os.clock() < deadline do
+							task.wait(0.2)
+						end
+						if checkTrack.Length == 0 then
+							warn(string.format(
+								"[BaldiGame] %s/Animations/%s loaded but stays length 0 — the id %s probably isn't published to this game's owner, or it's for a different rig type (R6 vs R15). Re-export it under the place's owner.",
+								model.Name, animName, animId))
+						end
+					end)
 				else
 					warn(string.format(
 						"[BaldiGame] %s/Animations/%s failed to load — is the id published to this game's owner (user or group)?",
