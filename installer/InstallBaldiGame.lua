@@ -151,6 +151,18 @@ GameConfig.GAME_SUBTITLE = "a Baldi's Basics inspired fan game"
 GameConfig.COUNTDOWN_SECONDS = 3
 GameConfig.FIRST_PERSON = true -- lock camera to first person during a round
 
+-- Menu camera: instead of a flat image, the main menu shows a slow orbit
+-- of the school (the 3D scene shows through the transparent menu unless you
+-- set IMAGES.MENU_BACKGROUND). Tune FOCUS to whatever you want it circling
+-- — the map center, the exit door, a character statue, etc.
+GameConfig.MENU_CAMERA = {
+	FOCUS = Vector3.new(0, 4, 0), -- the point the camera looks at and orbits
+	RADIUS = 70, -- horizontal distance from FOCUS
+	HEIGHT = 34, -- how far above FOCUS the camera sits
+	ORBIT_SPEED = 0.06, -- radians/sec; 0 holds a still shot
+	FIELD_OF_VIEW = 70,
+}
+
 -- ========== Notebooks ==========
 GameConfig.NOTEBOOK_SPAWN_COUNT = 10 -- how many notebooks are placed per round
 GameConfig.NOTEBOOK_PROMPT_DISTANCE = 8
@@ -5499,6 +5511,9 @@ print("[BaldiGame] Client ready.")
 	first person during play.
 ]]
 
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
 local MenuController = {}
 
 function MenuController.init(ctx)
@@ -5535,6 +5550,48 @@ function MenuController.init(ctx)
 		end
 	end
 
+	-- A slow orbit of the school behind the main menu, in place of the player
+	-- camera. Runs only while the menu is up; the round camera takes over the
+	-- moment play starts.
+	local menuCameraConn = nil
+	local function menuCamera(enabled)
+		local cfg = ctx.config.MENU_CAMERA
+		local camera = Workspace.CurrentCamera
+		if enabled and cfg then
+			if menuCameraConn then
+				return -- already orbiting
+			end
+			if camera then
+				camera.CameraType = Enum.CameraType.Scriptable
+				camera.FieldOfView = cfg.FIELD_OF_VIEW or 70
+			end
+			local angle = 0
+			menuCameraConn = RunService.RenderStepped:Connect(function(dt)
+				local cam = Workspace.CurrentCamera
+				if not cam then
+					return
+				end
+				cam.CameraType = Enum.CameraType.Scriptable
+				angle = angle + dt * (cfg.ORBIT_SPEED or 0)
+				local position = cfg.FOCUS + Vector3.new(
+					math.cos(angle) * cfg.RADIUS,
+					cfg.HEIGHT,
+					math.sin(angle) * cfg.RADIUS
+				)
+				cam.CFrame = CFrame.new(position, cfg.FOCUS)
+			end)
+		else
+			if menuCameraConn then
+				menuCameraConn:Disconnect()
+				menuCameraConn = nil
+			end
+			if camera then
+				camera.CameraType = Enum.CameraType.Custom
+				camera.FieldOfView = 70
+			end
+		end
+	end
+
 	-- ===================== screen scaffolding =====================
 
 	local screens = {}
@@ -5557,6 +5614,7 @@ function MenuController.init(ctx)
 	end
 
 	local function showScreen(name)
+		menuCamera(name == "main") -- orbit the school only behind the main menu
 		for screenName, screen in pairs(screens) do
 			if screenName == name then
 				screen.GroupTransparency = 1
@@ -5593,6 +5651,10 @@ function MenuController.init(ctx)
 	-- ===================== main menu =====================
 
 	local mainMenu = makeScreen("main", theme.chalkboard, "MENU_BACKGROUND")
+	-- no flat background art? let the orbiting school show through instead
+	if not UiKit.hasImage(images.MENU_BACKGROUND) then
+		mainMenu.BackgroundTransparency = 1
+	end
 
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0),
@@ -5753,6 +5815,7 @@ function MenuController.init(ctx)
 	local function enterRound()
 		self.inRound = true
 		hideAllScreens()
+		menuCamera(false) -- stop the orbit; the round camera follows the player
 		hud.show()
 		stamina.setEnabled(true)
 		firstPersonCamera(true)

@@ -12,6 +12,18 @@ GameConfig.GAME_SUBTITLE = "a Baldi's Basics inspired fan game"
 GameConfig.COUNTDOWN_SECONDS = 3
 GameConfig.FIRST_PERSON = true -- lock camera to first person during a round
 
+-- Menu camera: instead of a flat image, the main menu shows a slow orbit
+-- of the school (the 3D scene shows through the transparent menu unless you
+-- set IMAGES.MENU_BACKGROUND). Tune FOCUS to whatever you want it circling
+-- — the map center, the exit door, a character statue, etc.
+GameConfig.MENU_CAMERA = {
+	FOCUS = Vector3.new(0, 4, 0), -- the point the camera looks at and orbits
+	RADIUS = 70, -- horizontal distance from FOCUS
+	HEIGHT = 34, -- how far above FOCUS the camera sits
+	ORBIT_SPEED = 0.06, -- radians/sec; 0 holds a still shot
+	FIELD_OF_VIEW = 70,
+}
+
 -- ========== Notebooks ==========
 GameConfig.NOTEBOOK_SPAWN_COUNT = 10 -- how many notebooks are placed per round
 GameConfig.NOTEBOOK_PROMPT_DISTANCE = 8

@@ -17,6 +17,9 @@
 	first person during play.
 ]]
 
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
 local MenuController = {}
 
 function MenuController.init(ctx)
@@ -53,6 +56,48 @@ function MenuController.init(ctx)
 		end
 	end
 
+	-- A slow orbit of the school behind the main menu, in place of the player
+	-- camera. Runs only while the menu is up; the round camera takes over the
+	-- moment play starts.
+	local menuCameraConn = nil
+	local function menuCamera(enabled)
+		local cfg = ctx.config.MENU_CAMERA
+		local camera = Workspace.CurrentCamera
+		if enabled and cfg then
+			if menuCameraConn then
+				return -- already orbiting
+			end
+			if camera then
+				camera.CameraType = Enum.CameraType.Scriptable
+				camera.FieldOfView = cfg.FIELD_OF_VIEW or 70
+			end
+			local angle = 0
+			menuCameraConn = RunService.RenderStepped:Connect(function(dt)
+				local cam = Workspace.CurrentCamera
+				if not cam then
+					return
+				end
+				cam.CameraType = Enum.CameraType.Scriptable
+				angle = angle + dt * (cfg.ORBIT_SPEED or 0)
+				local position = cfg.FOCUS + Vector3.new(
+					math.cos(angle) * cfg.RADIUS,
+					cfg.HEIGHT,
+					math.sin(angle) * cfg.RADIUS
+				)
+				cam.CFrame = CFrame.new(position, cfg.FOCUS)
+			end)
+		else
+			if menuCameraConn then
+				menuCameraConn:Disconnect()
+				menuCameraConn = nil
+			end
+			if camera then
+				camera.CameraType = Enum.CameraType.Custom
+				camera.FieldOfView = 70
+			end
+		end
+	end
+
 	-- ===================== screen scaffolding =====================
 
 	local screens = {}
@@ -75,6 +120,7 @@ function MenuController.init(ctx)
 	end
 
 	local function showScreen(name)
+		menuCamera(name == "main") -- orbit the school only behind the main menu
 		for screenName, screen in pairs(screens) do
 			if screenName == name then
 				screen.GroupTransparency = 1
@@ -111,6 +157,10 @@ function MenuController.init(ctx)
 	-- ===================== main menu =====================
 
 	local mainMenu = makeScreen("main", theme.chalkboard, "MENU_BACKGROUND")
+	-- no flat background art? let the orbiting school show through instead
+	if not UiKit.hasImage(images.MENU_BACKGROUND) then
+		mainMenu.BackgroundTransparency = 1
+	end
 
 	UiKit.label({
 		AnchorPoint = Vector2.new(0.5, 0),
@@ -271,6 +321,7 @@ function MenuController.init(ctx)
 	local function enterRound()
 		self.inRound = true
 		hideAllScreens()
+		menuCamera(false) -- stop the orbit; the round camera follows the player
 		hud.show()
 		stamina.setEnabled(true)
 		firstPersonCamera(true)
